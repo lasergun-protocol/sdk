@@ -9,14 +9,17 @@ import type {
   StateChangeCallback, 
   Transaction,
   CryptoKeys,
-  HexString
+  HexString,
+  Shield
 } from '../types';
 import { LaserGunError, ErrorCode } from '../types';
 import { CryptoService } from '../crypto';
+import { EventLog } from 'ethers';
 
 /**
  * Event scanner for LaserGun contract
  * Automatically scans blockchain events and processes incoming transactions
+ * FIXED: Now recovers our own shields from blockchain
  */
 export class EventScanner {
   private readonly contract: Contract;
@@ -34,6 +37,10 @@ export class EventScanner {
   private lastScannedBlock: number = 0;
   private scanningPromise: Promise<void> | null = null;
   private noncePromise: Promise<number> | null = null;
+
+  // Cache for our secrets to avoid regenerating
+  private ourSecretsCache: Map<string, {secret: HexString, nonce: number}> = new Map();
+  private maxNonceToCheck: number = 1000; // Reasonable limit for nonce checking
 
   // Callbacks
   private transactionCallback?: TransactionCallback;
@@ -73,10 +80,142 @@ export class EventScanner {
       this.currentNonce = await this.storage.getLastNonce(this.chainId, this.wallet);
       this.lastScannedBlock = await this.storage.getLastScannedBlock(this.chainId, this.wallet) || 0;
       
+      // Initialize secrets cache
+      await this.initializeSecretsCache();
+      
       this.emitStateChange();
     } catch (error) {
       throw new LaserGunError(
         `Failed to initialize scanner: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        ErrorCode.SCANNER_ERROR,
+        error
+      );
+    }
+  }
+
+  /**
+   * Initialize cache of our possible secrets
+   */
+  private async initializeSecretsCache(): Promise<void> {
+    if (!this.keys) return;
+
+    // Get current max nonce from storage
+    const lastNonce = await this.storage.getLastNonce(this.chainId, this.wallet);
+    const maxNonce = Math.min(lastNonce + 100, this.maxNonceToCheck); // Check a bit beyond current nonce
+
+    // Generate all possible secrets for our wallet
+    for (let nonce = 0; nonce <= maxNonce; nonce++) {
+      const secret = CryptoService.generateSecret(this.keys.privateKey as HexString, nonce);
+      const commitment = CryptoService.generateCommitment(secret, this.wallet);
+      this.ourSecretsCache.set(commitment, { secret, nonce });
+    }
+  }
+
+  /**
+   * Check if commitment belongs to us and return secret
+   */
+  private async isOurCommitment(commitment: string): Promise<{isOurs: boolean, secret?: HexString, nonce?: number}> {
+    // First check cache
+    const cached = this.ourSecretsCache.get(commitment);
+    if (cached) {
+      return { isOurs: true, secret: cached.secret, nonce: cached.nonce };
+    }
+
+    // If not in cache, extend search range
+    if (!this.keys) return { isOurs: false };
+
+    const currentMaxNonce = Math.max(...Array.from(this.ourSecretsCache.values()).map(v => v.nonce));
+    
+    // Check additional range
+    for (let nonce = currentMaxNonce + 1; nonce <= currentMaxNonce + 200; nonce++) {
+      const secret = CryptoService.generateSecret(this.keys.privateKey as HexString, nonce);
+      const testCommitment = CryptoService.generateCommitment(secret, this.wallet);
+      
+      // Add to cache
+      this.ourSecretsCache.set(testCommitment, { secret, nonce });
+      
+      if (testCommitment === commitment) {
+        return { isOurs: true, secret, nonce };
+      }
+    }
+
+    return { isOurs: false };
+  }
+
+  /**
+   * Recover all our shields from blockchain
+   */
+  async recoverFromBlockchain(): Promise<void> {
+    if (!this.wallet || !this.keys) {
+      throw new LaserGunError('Scanner not initialized', ErrorCode.SCANNER_ERROR);
+    }
+
+    try {
+      const latestBlock = await this.provider.getBlockNumber();
+      const fromBlock = this.startBlock;
+
+      // Get all Shielded events
+      const shieldedEvents = await this.contract.queryFilter(
+        this.contract.filters.Shielded(),
+        fromBlock,
+        latestBlock
+      );
+
+      let recoveredCount = 0;
+
+      for (const event of shieldedEvents) {
+        const commitment = (event as EventLog).args.commitment;
+        
+        // Check if this is our commitment
+        const ownershipCheck = await this.isOurCommitment(commitment);
+        
+        if (ownershipCheck.isOurs && ownershipCheck.secret && ownershipCheck.nonce !== undefined) {
+          // Check if we already have this shield
+          const existingShield = await this.storage.getShield(this.chainId, this.wallet, commitment);
+          
+          if (!existingShield) {
+            // Create and save shield
+            const shield: Shield = {
+              secret: ownershipCheck.secret,
+              commitment: commitment,
+              token: (event as EventLog).args.token,
+              amount: (event as EventLog).args.amount.toString(),
+              timestamp: Date.now()
+            };
+
+            await this.storage.saveShield(this.chainId, this.wallet, shield);
+
+            // Create transaction record
+            const block = await this.provider.getBlock(event.blockNumber);
+            const timestamp = block ? block.timestamp * 1000 : Date.now();
+
+            const transaction: Transaction = {
+              nonce: ownershipCheck.nonce,
+              type: 'shield',
+              txHash: event.transactionHash,
+              blockNumber: event.blockNumber,
+              timestamp: timestamp,
+              token: (event as EventLog).args.token,
+              amount: (event as EventLog).args.amount.toString(),
+              commitment: commitment,
+              fee: (event as EventLog).args.fee.toString()
+            };
+
+            await this.storage.saveTransaction(this.chainId, this.wallet, transaction.nonce, transaction);
+            
+            recoveredCount++;
+
+            if (this.transactionCallback) {
+              this.transactionCallback(transaction);
+            }
+          }
+        }
+      }
+
+      console.log(`Recovered ${recoveredCount} shields from blockchain`);
+    } catch (error) {
+      throw new LaserGunError(
+        `Failed to recover from blockchain: ${error instanceof Error ? error.message : 'Unknown error'}`,
         ErrorCode.SCANNER_ERROR,
         error
       );
@@ -94,6 +233,9 @@ export class EventScanner {
     if (!this.wallet || !this.keys) {
       throw new LaserGunError('Scanner not initialized', ErrorCode.SCANNER_ERROR);
     }
+
+    // First recover any missing shields from blockchain
+    await this.recoverFromBlockchain();
 
     this.isRunning = true;
     this.emitStateChange();
@@ -130,6 +272,7 @@ export class EventScanner {
    */
   async changeContext(wallet: string, keys: CryptoKeys): Promise<void> {
     await this.stopScanning();
+    this.ourSecretsCache.clear();
     await this.initialize(wallet, keys);
   }
 
@@ -318,6 +461,17 @@ export class EventScanner {
           };
 
           await this.saveTransaction(transaction);
+
+          // Also save the shield
+          const shield: Shield = {
+            secret,
+            commitment,
+            token: shieldInfo.token,
+            amount: shieldInfo.amount.toString(),
+            timestamp: timestamp
+          };
+
+          await this.storage.saveShield(this.chainId, this.wallet, shield);
         }
       }
     } catch (error) {
@@ -330,7 +484,7 @@ export class EventScanner {
   }
 
   /**
-   * Process Shielded event (our shields or incoming transfers)
+   * Process Shielded event (FIXED: now properly handles our own shields)
    */
   private async processShieldedEvent(event: any): Promise<void> {
     try {
@@ -339,21 +493,47 @@ export class EventScanner {
       const amount = event.args.amount.toString();
       const fee = event.args.fee.toString();
 
-      // Check if this commitment belongs to us by looking in existing transactions
-      const transactions = await this.storage.loadTransactions(this.chainId, this.wallet);
-      
-      // Look for existing transaction with this commitment (our operation)
-      const existingTx = transactions.find(tx => 
-        tx.commitment === commitment
-      );
-      
+      // Check for duplicate transactions first
+      const existingTx = await this.checkForDuplicateTransaction(event.transactionHash, commitment);
       if (existingTx) {
-        // This is our operation or already processed incoming transfer, skip
-        return;
+        return; // Skip duplicate
       }
+
+      // Check if this commitment belongs to us
+      const ownershipCheck = await this.isOurCommitment(commitment);
       
-      // This might be incoming transfer that hasn't been processed by SecretDelivered yet
-      // We'll let SecretDelivered handle it since it can decrypt and verify ownership
+      if (ownershipCheck.isOurs && ownershipCheck.secret && ownershipCheck.nonce !== undefined) {
+        // This is OUR shield operation - create transaction record
+        const block = await this.provider.getBlock(event.blockNumber);
+        const timestamp = block ? block.timestamp * 1000 : Date.now();
+
+        const transaction: Transaction = {
+          nonce: ownershipCheck.nonce,
+          type: 'shield',
+          txHash: event.transactionHash,
+          blockNumber: event.blockNumber,
+          timestamp: timestamp,
+          token: token,
+          amount: amount,
+          commitment: commitment,
+          fee: fee
+        };
+
+        await this.saveTransaction(transaction);
+
+        // Save the shield object too
+        const shield: Shield = {
+          secret: ownershipCheck.secret,
+          commitment: commitment,
+          token: token,
+          amount: amount,
+          timestamp: timestamp
+        };
+
+        await this.storage.saveShield(this.chainId, this.wallet, shield);
+      }
+      // If it's not our commitment, ignore (could be incoming transfer handled by SecretDelivered)
+      
     } catch (error) {
       this.handleError(new LaserGunError(
         `Failed to process Shielded event: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -364,7 +544,7 @@ export class EventScanner {
   }
 
   /**
-   * Process Unshielded event
+   * Process Unshielded event (FIXED: now properly handles our operations)
    */
   private async processUnshieldedEvent(event: any): Promise<void> {
     try {
@@ -373,22 +553,38 @@ export class EventScanner {
       const amount = event.args.amount.toString();
       const fee = event.args.fee.toString();
 
-      // Check if this unshield involves our commitments
-      const transactions = await this.storage.loadTransactions(this.chainId, this.wallet);
-      
-      // Look for existing transaction with this commitment (our operation)
-      const existingTx = transactions.find(tx => 
-        tx.commitment === commitment
-      );
-      
+      // Check for duplicate transactions first
+      const existingTx = await this.checkForDuplicateTransaction(event.transactionHash, commitment);
       if (existingTx) {
-        // This involves our commitment but we don't need to do anything
-        // Our balance calculations in getTokenBalance() already account for transfers
-        // Unshield events don't change our balance - transfer already did
-        return;
+        return; // Skip duplicate
       }
+
+      // Check if this commitment belongs to us
+      const ownershipCheck = await this.isOurCommitment(commitment);
       
-      // Someone else's unshield, ignore
+      if (ownershipCheck.isOurs && ownershipCheck.nonce !== undefined) {
+        // This is OUR unshield operation - create transaction record
+        const block = await this.provider.getBlock(event.blockNumber);
+        const timestamp = block ? block.timestamp * 1000 : Date.now();
+
+        const nextNonce = await this.getNextNonce();
+
+        const transaction: Transaction = {
+          nonce: nextNonce,
+          type: 'unshield',
+          txHash: event.transactionHash,
+          blockNumber: event.blockNumber,
+          timestamp: timestamp,
+          token: token,
+          amount: amount,
+          commitment: commitment,
+          fee: fee
+        };
+
+        await this.saveTransaction(transaction);
+      }
+      // If it's not our commitment, ignore
+      
     } catch (error) {
       this.handleError(new LaserGunError(
         `Failed to process Unshielded event: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -407,27 +603,32 @@ export class EventScanner {
       const newCommitment = event.args.newCommitment;
 
       // Check if this consolidation involves our commitments
-      const transactions = await this.storage.loadTransactions(this.chainId, this.wallet);
-      
-      // Find transactions with old commitments
       let isOurConsolidation = false;
       let totalAmount = 0n;
       let token = '';
       
       for (const oldCommitment of oldCommitments) {
-        const existingTx = transactions.find(tx => 
-          tx.commitment === oldCommitment && 
-          (tx.type === 'shield' || tx.type === 'received')
-        );
+        const ownershipCheck = await this.isOurCommitment(oldCommitment);
         
-        if (existingTx) {
+        if (ownershipCheck.isOurs) {
           isOurConsolidation = true;
-          totalAmount += BigInt(existingTx.amount);
-          token = existingTx.token;
+          
+          // Get shield info to calculate total
+          const shieldInfo = await this.contract.getShieldInfo(oldCommitment);
+          if (shieldInfo.exists) {
+            totalAmount += BigInt(shieldInfo.amount.toString());
+            token = shieldInfo.token;
+          }
         }
       }
       
       if (isOurConsolidation && token) {
+        // Check for duplicate
+        const existingTx = await this.checkForDuplicateTransaction(event.transactionHash, newCommitment);
+        if (existingTx) {
+          return;
+        }
+
         // Get block timestamp
         const block = await this.provider.getBlock(event.blockNumber);
         const timestamp = block ? block.timestamp * 1000 : Date.now();
@@ -447,6 +648,20 @@ export class EventScanner {
         };
         
         await this.saveTransaction(transaction);
+
+        // Save the new consolidated shield if it's ours
+        const newOwnershipCheck = await this.isOurCommitment(newCommitment);
+        if (newOwnershipCheck.isOurs && newOwnershipCheck.secret) {
+          const shield: Shield = {
+            secret: newOwnershipCheck.secret,
+            commitment: newCommitment,
+            token: token,
+            amount: totalAmount.toString(),
+            timestamp: timestamp
+          };
+
+          await this.storage.saveShield(this.chainId, this.wallet, shield);
+        }
       }
     } catch (error) {
       this.handleError(new LaserGunError(

@@ -19,10 +19,12 @@ import type {
 import { LaserGunError, ErrorCode } from '../types';
 import { CryptoService } from '../crypto';
 import { EventScanner } from './scanner';
+import { EventLog } from 'ethers';
 
 /**
  * Main LaserGun SDK class
  * Provides privacy-preserving ERC20 operations with shield/unshield/transfer functionality
+ * FIXED: Now includes blockchain recovery capabilities
  */
 export default class LaserGun {
   private readonly config: LaserGunConfig;
@@ -503,6 +505,450 @@ export default class LaserGun {
   }
 
   /**
+   * Recover all data from blockchain (shields, transactions)
+   * Call this after localStorage clear or when switching devices
+   */
+  async recoverFromBlockchain(): Promise<{
+    shieldsRecovered: number;
+    transactionsRecovered: number;
+  }> {
+    this.ensureInitialized();
+    
+    try {
+      await this.checkNetworkConnection();
+      
+      // Use scanner's recovery mechanism
+      await this.scanner.recoverFromBlockchain();
+      
+      // Get counts for reporting
+      const shields = await this.storage.loadShields(this.config.chainId, this.wallet);
+      const transactions = await this.storage.loadTransactions(this.config.chainId, this.wallet);
+      
+      return {
+        shieldsRecovered: shields.length,
+        transactionsRecovered: transactions.length
+      };
+      
+    } catch (error) {
+      throw this.createError(error, 'Failed to recover from blockchain');
+    }
+  }
+
+  /**
+   * Check if we can recover a specific commitment
+   */
+  async canRecoverCommitment(commitment: string): Promise<{
+    canRecover: boolean;
+    secret?: string;
+    nonce?: number;
+  }> {
+    this.ensureInitialized();
+    
+    if (!this.keys) {
+      return { canRecover: false };
+    }
+
+    try {
+      // Check up to reasonable nonce limit
+      const maxNonce = Math.max(await this.storage.getLastNonce(this.config.chainId, this.wallet) + 100, 1000);
+      
+      for (let nonce = 0; nonce <= maxNonce; nonce++) {
+        const secret = CryptoService.generateSecret(this.keys.privateKey as HexString, nonce);
+        const testCommitment = CryptoService.generateCommitment(secret, this.wallet);
+        
+        if (testCommitment === commitment) {
+          return {
+            canRecover: true,
+            secret,
+            nonce
+          };
+        }
+      }
+      
+      return { canRecover: false };
+      
+    } catch (error) {
+      throw this.createError(error, 'Failed to check commitment recovery');
+    }
+  }
+
+  /**
+   * Get all active shields from blockchain (not from local storage)
+   * This queries the contract directly for current state
+   */
+  async getActiveShieldsFromBlockchain(): Promise<Array<{
+    commitment: string;
+    token: string;
+    amount: string;
+    timestamp: number;
+    secret?: string;
+    nonce?: number;
+  }>> {
+    this.ensureInitialized();
+    
+    try {
+      await this.checkNetworkConnection();
+      
+      const result: Array<{
+        commitment: string;
+        token: string;
+        amount: string;
+        timestamp: number;
+        secret?: string;
+        nonce?: number;
+      }> = [];
+      
+      // Get all Shielded events
+      const latestBlock = await this.config.provider.getBlockNumber();
+      const shieldedEvents = await this.contract.queryFilter(
+        this.contract.filters.Shielded(),
+        0,
+        latestBlock
+      );
+      
+      for (const event of shieldedEvents) {
+        const commitment = (event as EventLog).args.commitment;
+        
+        // Check if shield is still active
+        const isActive = await this.contract.isCommitmentActive(commitment);
+        if (!isActive) continue;
+        
+        const shieldInfo = await this.contract.getShieldInfo(commitment);
+        if (!shieldInfo.exists || shieldInfo.spent) continue;
+        
+        // Check if this is our commitment
+        const recoveryInfo = await this.canRecoverCommitment(commitment);
+        
+        result.push({
+          commitment,
+          token: shieldInfo.token,
+          amount: shieldInfo.amount.toString(),
+          timestamp: Number(shieldInfo.timestamp) * 1000,
+          ...(recoveryInfo.canRecover && {
+            secret: recoveryInfo.secret,
+            nonce: recoveryInfo.nonce
+          })
+        });
+      }
+      
+      return result;
+      
+    } catch (error) {
+      throw this.createError(error, 'Failed to get active shields from blockchain');
+    }
+  }
+
+  /**
+   * Sync local storage with blockchain state
+   * This ensures our local data matches blockchain reality
+   */
+  async syncWithBlockchain(): Promise<{
+    added: number;
+    removed: number;
+    updated: number;
+  }> {
+    this.ensureInitialized();
+    
+    try {
+      const stats = { added: 0, removed: 0, updated: 0 };
+      
+      // First recover any missing data
+      await this.recoverFromBlockchain();
+      
+      // Get our local shields
+      const localShields = await this.storage.loadShields(this.config.chainId, this.wallet);
+      
+      // Check each local shield against blockchain
+      for (const localShield of localShields) {
+        const isActive = await this.contract.isCommitmentActive(localShield.commitment);
+        
+        if (!isActive) {
+          // Shield was spent, remove from local storage
+          await this.storage.deleteShield(this.config.chainId, this.wallet, localShield.commitment);
+          stats.removed++;
+        }
+      }
+      
+      // Get blockchain shields and ensure we have them locally
+      const blockchainShields = await this.getActiveShieldsFromBlockchain();
+      
+      for (const blockchainShield of blockchainShields) {
+        if (blockchainShield.secret && blockchainShield.nonce !== undefined) {
+          // This is our shield, check if we have it locally
+          const localShield = await this.storage.getShield(this.config.chainId, this.wallet, blockchainShield.commitment);
+          
+          if (!localShield) {
+            // Add missing shield
+            const shield: Shield = {
+              secret: blockchainShield.secret,
+              commitment: blockchainShield.commitment,
+              token: blockchainShield.token,
+              amount: blockchainShield.amount,
+              timestamp: blockchainShield.timestamp
+            };
+            
+            await this.storage.saveShield(this.config.chainId, this.wallet, shield);
+            stats.added++;
+          } else if (localShield.amount !== blockchainShield.amount) {
+            // Update amount if different (shouldn't happen but just in case)
+            const updatedShield: Shield = {
+              ...localShield,
+              amount: blockchainShield.amount
+            };
+            
+            await this.storage.saveShield(this.config.chainId, this.wallet, updatedShield);
+            stats.updated++;
+          }
+        }
+      }
+      
+      return stats;
+      
+    } catch (error) {
+      throw this.createError(error, 'Failed to sync with blockchain');
+    }
+  }
+
+  /**
+   * Get comprehensive balance that always reflects blockchain reality
+   */
+  async getTokenBalanceFromBlockchain(tokenAddress: string): Promise<TokenBalance & {
+    activeShields: Array<{
+      commitment: string;
+      amount: string;
+      timestamp: number;
+    }>;
+  }> {
+    this.ensureInitialized();
+    
+    try {
+      await this.checkNetworkConnection();
+      
+      const tokenContract = new Contract(tokenAddress, LaserGun.ERC20_ABI, this.config.provider);
+      
+      // Get token info and public balance
+      const [symbol, decimals, publicBalance] = await Promise.all([
+        tokenContract.symbol(),
+        tokenContract.decimals(),
+        tokenContract.balanceOf(this.wallet)
+      ]);
+      
+      // Get our active shields from blockchain
+      const blockchainShields = await this.getActiveShieldsFromBlockchain();
+      
+      // Calculate private balance and collect active shields for this token
+      let privateBalance = 0n;
+      const activeShields: Array<{
+        commitment: string;
+        amount: string;
+        timestamp: number;
+      }> = [];
+      
+      for (const shield of blockchainShields) {
+        if (shield.token.toLowerCase() === tokenAddress.toLowerCase() && shield.secret) {
+          const amount = BigInt(shield.amount);
+          privateBalance += amount;
+          
+          activeShields.push({
+            commitment: shield.commitment,
+            amount: shield.amount,
+            timestamp: shield.timestamp
+          });
+        }
+      }
+      
+      return {
+        token: tokenAddress,
+        symbol,
+        decimals,
+        publicBalance: publicBalance.toString(),
+        privateBalance: privateBalance.toString(),
+        activeShields
+      };
+      
+    } catch (error) {
+      throw this.createError(error, 'Failed to get token balance from blockchain');
+    }
+  }
+
+  /**
+   * Emergency recovery: scan entire blockchain for our commitments
+   * Use this if you suspect data loss or corruption
+   */
+  async emergencyRecovery(fromBlock: number = 0): Promise<{
+    shieldsFound: number;
+    transactionsCreated: number;
+    errors: string[];
+  }> {
+    this.ensureInitialized();
+    
+    try {
+      const stats = {
+        shieldsFound: 0,
+        transactionsCreated: 0,
+        errors: [] as string[]
+      };
+      
+      console.log('Starting emergency recovery from blockchain...');
+      
+      const latestBlock = await this.config.provider.getBlockNumber();
+      const batchSize = 10000;
+      
+      // Generate our possible secrets cache (extended range)
+      const maxNonce = Math.max(await this.storage.getLastNonce(this.config.chainId, this.wallet) + 200, 2000);
+      const ourCommitments = new Map<string, {secret: HexString, nonce: number}>();
+      
+      console.log(`Generating ${maxNonce} possible secrets...`);
+      
+      for (let nonce = 0; nonce <= maxNonce; nonce++) {
+        const secret = CryptoService.generateSecret(this.keys!.privateKey as HexString, nonce);
+        const commitment = CryptoService.generateCommitment(secret, this.wallet);
+        ourCommitments.set(commitment, { secret, nonce });
+      }
+      
+      console.log(`Scanning blocks ${fromBlock} to ${latestBlock}...`);
+      
+      // Scan in batches
+      for (let blockStart = fromBlock; blockStart <= latestBlock; blockStart += batchSize) {
+        const blockEnd = Math.min(blockStart + batchSize - 1, latestBlock);
+        
+        try {
+          console.log(`Scanning blocks ${blockStart}-${blockEnd}...`);
+          
+          // Get all Shielded events in this batch
+          const shieldedEvents = await this.contract.queryFilter(
+            this.contract.filters.Shielded(),
+            blockStart,
+            blockEnd
+          );
+          
+          for (const event of shieldedEvents) {
+            const commitment = (event as EventLog).args.commitment;
+            const ourCommitment = ourCommitments.get(commitment);
+            
+            if (ourCommitment) {
+              // This is our shield!
+              console.log(`Found our shield: ${commitment}`);
+              
+              // Check if we already have it
+              const existingShield = await this.storage.getShield(this.config.chainId, this.wallet, commitment);
+              
+              if (!existingShield) {
+                // Save shield
+                const shield: Shield = {
+                  secret: ourCommitment.secret,
+                  commitment: commitment,
+                  token: (event as EventLog).args.token,
+                  amount: (event as EventLog).args.amount.toString(),
+                  timestamp: Date.now()
+                };
+                
+                await this.storage.saveShield(this.config.chainId, this.wallet, shield);
+                stats.shieldsFound++;
+                
+                // Create transaction record
+                const block = await this.config.provider.getBlock(event.blockNumber);
+                const timestamp = block ? block.timestamp * 1000 : Date.now();
+                
+                const transaction: Transaction = {
+                  nonce: ourCommitment.nonce,
+                  type: 'shield',
+                  txHash: event.transactionHash,
+                  blockNumber: event.blockNumber,
+                  timestamp: timestamp,
+                  token: (event as EventLog).args.token,
+                  amount: (event as EventLog).args.amount.toString(),
+                  commitment: commitment,
+                  fee: (event as EventLog).args.fee.toString()
+                };
+                
+                await this.storage.saveTransaction(this.config.chainId, this.wallet, transaction.nonce, transaction);
+                stats.transactionsCreated++;
+              }
+            }
+          }
+          
+        } catch (error) {
+          const errorMsg = `Failed to scan blocks ${blockStart}-${blockEnd}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+          stats.errors.push(errorMsg);
+          console.error(errorMsg);
+        }
+        
+        // Small delay to prevent rate limiting
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      
+      console.log('Emergency recovery completed:', stats);
+      return stats;
+      
+    } catch (error) {
+      throw this.createError(error, 'Emergency recovery failed');
+    }
+  }
+
+  /**
+   * Validate data integrity between local storage and blockchain
+   */
+  async validateDataIntegrity(): Promise<{
+    isValid: boolean;
+    issues: string[];
+    suggestions: string[];
+  }> {
+    this.ensureInitialized();
+    
+    const result = {
+      isValid: true,
+      issues: [] as string[],
+      suggestions: [] as string[]
+    };
+    
+    try {
+      // Check if all local shields exist and are active on blockchain
+      const localShields = await this.storage.loadShields(this.config.chainId, this.wallet);
+      
+      for (const shield of localShields) {
+        const isActive = await this.contract.isCommitmentActive(shield.commitment);
+        
+        if (!isActive) {
+          result.isValid = false;
+          result.issues.push(`Shield ${shield.commitment} is inactive on blockchain but exists locally`);
+          result.suggestions.push(`Run syncWithBlockchain() to clean up spent shields`);
+        }
+        
+        const shieldInfo = await this.contract.getShieldInfo(shield.commitment);
+        if (shieldInfo.exists && shieldInfo.amount.toString() !== shield.amount) {
+          result.isValid = false;
+          result.issues.push(`Shield ${shield.commitment} amount mismatch: local=${shield.amount}, blockchain=${shieldInfo.amount}`);
+          result.suggestions.push(`Run syncWithBlockchain() to update amounts`);
+        }
+      }
+      
+      // Check if we're missing any shields from blockchain
+      const blockchainShields = await this.getActiveShieldsFromBlockchain();
+      const localCommitments = new Set(localShields.map(s => s.commitment));
+      
+      for (const blockchainShield of blockchainShields) {
+        if (blockchainShield.secret && !localCommitments.has(blockchainShield.commitment)) {
+          result.isValid = false;
+          result.issues.push(`Missing shield ${blockchainShield.commitment} from local storage`);
+          result.suggestions.push(`Run recoverFromBlockchain() to restore missing shields`);
+        }
+      }
+      
+      if (result.isValid) {
+        result.suggestions.push('Data integrity is good!');
+      }
+      
+    } catch (error) {
+      result.isValid = false;
+      result.issues.push(`Failed to validate data integrity: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      result.suggestions.push('Check network connection and try again');
+    }
+    
+    return result;
+  }
+
+  /**
    * Get transaction history
    */
   async getTransactionHistory(): Promise<Transaction[]> {
@@ -574,8 +1020,13 @@ export default class LaserGun {
   /**
    * Start event scanner
    */
-  async startScanner(): Promise<void> {
+  async startScanner(autoRecover: boolean = false): Promise<void> {
     this.ensureInitialized();
+    
+    if (autoRecover) {
+      await this.recoverFromBlockchain();
+    }
+    
     await this.scanner.startScanning();
   }
 
@@ -620,6 +1071,13 @@ export default class LaserGun {
    */
   getPublicKey(): string | null {
     return this.keys?.publicKey || null;
+  }
+
+  /**
+   * Get scanner instance for advanced operations
+   */
+  getScanner(): EventScanner {
+    return this.scanner;
   }
 
   // Private helper methods
