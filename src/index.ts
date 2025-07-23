@@ -180,15 +180,7 @@ export const diagnostics = {
       publicKey: lasergun.getPublicKey()
     };
   },
-  
-  /**
-   * Get storage statistics
-   */
-  getStorageStats: async (chainId: number, wallet: string) => {
-    const storage = new LocalStorageAdapter();
-    return await storage.getStorageStats(chainId, wallet);
-  },
-  
+   
   /**
    * Clear all data for wallet/chain
    */
