@@ -1,4 +1,4 @@
-import type { IStorageAdapter, Transaction, Shield, EventCounts } from '../types';
+import type { IStorageAdapter,  EventCounts } from '../types';
 import { LaserGunError, ErrorCode } from '../types';
 import { LaserGunConfigManager } from './config';
 import { EventScanner } from './scanner';
@@ -196,7 +196,7 @@ export class RecoveryManager {
       }
       
       let duplicateNonces = 0;
-      for (const [key, count] of nonceCounts) {
+      for (const [, count] of nonceCounts) {
         if (count > 1) {
           duplicateNonces++;
         }

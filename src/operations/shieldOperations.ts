@@ -1,4 +1,4 @@
-import { Contract, parseUnits, ZeroHash } from 'ethers';
+import {  parseUnits, ZeroHash } from 'ethers';
 import type { 
   IStorageAdapter, 
   Shield, 
