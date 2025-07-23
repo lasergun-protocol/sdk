@@ -86,7 +86,7 @@ export interface Transaction extends PartialHDMetadata {
   readonly fee?: string;
 }
 
-export type TransactionType = 'shield' | 'unshield' | 'transfer' | 'received';
+export type TransactionType = 'shield' | 'unshield' | 'transfer' | 'received' | 'remainder' | 'consolidate';
 
 // Event counting for HD derivation with constraints
 export interface EventCounts {
