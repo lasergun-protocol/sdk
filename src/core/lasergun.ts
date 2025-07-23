@@ -1,4 +1,4 @@
-import { Contract,  parseUnits, ZeroHash } from 'ethers';
+import { Contract, parseUnits, ZeroHash } from 'ethers';
 import type { 
   LaserGunConfig, 
   IStorageAdapter, 
@@ -14,17 +14,16 @@ import type {
   UnshieldResult,
   TransferResult,
   CryptoKeys,
-  HexString
+  HexString,
+  EventCounts, 
 } from '../types';
-import { LaserGunError, ErrorCode } from '../types';
-import { CryptoService } from '../crypto';
+import { LaserGunError, ErrorCode, createEventCounts } from '../types';
+import { CryptoService, HDSecretManager } from '../crypto';
 import { EventScanner } from './scanner';
-import { EventLog } from 'ethers';
 
 /**
- * Main LaserGun SDK class
- * Provides privacy-preserving ERC20 operations with shield/unshield/transfer functionality
- * FIXED: Now includes blockchain recovery capabilities
+ * Main LaserGun SDK class with HD derivation support
+ * Provides privacy-preserving ERC20 operations with deterministic HD recovery
  */
 export default class LaserGun {
   private readonly config: LaserGunConfig;
@@ -33,7 +32,9 @@ export default class LaserGun {
   private readonly scanner: EventScanner;
   
   private keys: CryptoKeys | null = null;
+  private hdManager: HDSecretManager | null = null;
   private wallet: string = '';
+  private eventCounts: EventCounts | null = null;
 
   // LaserGun contract ABI
   private static readonly CONTRACT_ABI = [
@@ -52,6 +53,7 @@ export default class LaserGun {
     // Public key management
     'function registerPublicKey(bytes calldata publicKey) external',
     'function publicKeys(address user) external view returns (bytes)',
+    'function userNonces(address user) external view returns (uint256)',
     
     // Fee info
     'function shieldFeePercent() external view returns (uint256)',
@@ -92,19 +94,29 @@ export default class LaserGun {
   }
 
   /**
-   * Initialize LaserGun for specific wallet
+   * Initialize LaserGun for specific wallet with HD system
    */
   async initialize(): Promise<void> {
     try {
       this.wallet = (await this.config.signer.getAddress()).toLowerCase();
       
-      // Load existing keys or generate new ones
+      // Load or generate HD keys
       this.keys = await this.storage.loadKeys(this.config.chainId, this.wallet);
       
       if (!this.keys) {
         this.keys = await this.generateNewKeys();
         await this.storage.saveKeys(this.config.chainId, this.wallet, this.keys);
       }
+      
+      // Initialize HD manager
+      this.hdManager = CryptoService.createHDManager(
+        this.keys.privateKey as HexString,
+        this.wallet,
+        this.config.chainId
+      );
+      
+      // Load event counts
+      this.eventCounts = await this.storage.loadEventCounts(this.config.chainId, this.wallet);
       
       // Register public key if not already registered
       await this.ensurePublicKeyRegistered();
@@ -122,7 +134,7 @@ export default class LaserGun {
   }
 
   /**
-   * Shield (privatize) ERC20 tokens
+   * Shield (privatize) ERC20 tokens with HD derivation
    */
   async shield(amount: string, tokenAddress: string): Promise<ShieldResult> {
     this.ensureInitialized();
@@ -142,9 +154,10 @@ export default class LaserGun {
       await this.checkTokenBalance(tokenAddress, parsedAmount);
       await this.ensureAllowance(tokenAddress, parsedAmount);
       
-      // Generate secret and commitment
-      const nonce = await this.getNextNonce();
-      const secret = CryptoService.generateSecret(this.keys!.privateKey as HexString, nonce);
+      // Get current shield index and generate HD secret
+      const currentCounts = await this.getCurrentEventCounts();
+      const shieldIndex = currentCounts.shield;
+      const secret = this.hdManager!.deriveSecret('shield', shieldIndex);
       const commitment = CryptoService.generateCommitment(secret, this.wallet);
       
       // Execute shield transaction
@@ -157,20 +170,37 @@ export default class LaserGun {
       const fee = parsedAmount * feePercent / feeDenominator;
       const netAmount = parsedAmount - fee;
       
-      // Store shield locally
+      // Store shield with HD metadata
       const shield: Shield = {
         secret,
         commitment,
         token: tokenAddress,
         amount: netAmount.toString(),
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        derivationPath: `shield/${shieldIndex}`,
+        hdIndex: shieldIndex,
+        hdOperation: 'shield',
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber
       };
       
       await this.storage.saveShield(this.config.chainId, this.wallet, shield);
       
+      // Update event counts
+      const updatedCounts = createEventCounts({
+        shield: currentCounts.shield + 1,
+        remainder: currentCounts.remainder,
+        received: currentCounts.received,
+        consolidate: currentCounts.consolidate,
+        lastUpdatedBlock: Math.max(receipt.blockNumber, currentCounts.lastUpdatedBlock)
+      });
+      
+      await this.storage.saveEventCounts(this.config.chainId, this.wallet, updatedCounts);
+      this.eventCounts = updatedCounts;
+      
       // Save transaction record
       const transaction: Transaction = {
-        nonce,
+        nonce: shieldIndex, // HD index as nonce
         type: 'shield',
         txHash: receipt.hash,
         blockNumber: receipt.blockNumber,
@@ -178,7 +208,10 @@ export default class LaserGun {
         token: tokenAddress,
         amount: netAmount.toString(),
         commitment,
-        fee: fee.toString()
+        fee: fee.toString(),
+        derivationPath: `shield/${shieldIndex}`,
+        hdIndex: shieldIndex,
+        hdOperation: 'shield'
       };
       
       await this.storage.saveTransaction(this.config.chainId, this.wallet, transaction.nonce, transaction);
@@ -188,7 +221,9 @@ export default class LaserGun {
         txHash: receipt.hash,
         commitment,
         netAmount: netAmount.toString(),
-        fee: fee.toString()
+        fee: fee.toString(),
+        derivationPath: `shield/${shieldIndex}`,
+        hdIndex: shieldIndex
       };
       
     } catch (error) {
@@ -200,7 +235,7 @@ export default class LaserGun {
   }
 
   /**
-   * Unshield (convert back to public) tokens
+   * Unshield (convert back to public) tokens with HD remainder handling
    */
   async unshield(
     secret: HexString, 
@@ -231,14 +266,17 @@ export default class LaserGun {
         throw new LaserGunError('Insufficient shield balance', ErrorCode.INSUFFICIENT_BALANCE);
       }
       
-      // Generate new commitment for remainder (if any)
+      // Calculate remainder and generate remainder commitment if needed
       const remainderAmount = shieldBalance - parsedAmount;
       let newCommitment = ZeroHash;
+      let remainderDerivationPath: string | undefined;
       
       if (remainderAmount > 0n) {
-        const remainderNonce = await this.getNextNonce();
-        const remainderSecret = CryptoService.generateSecret(this.keys!.privateKey as HexString, remainderNonce);
+        const currentCounts = await this.getCurrentEventCounts();
+        const remainderIndex = currentCounts.remainder;
+        const remainderSecret = this.hdManager!.deriveSecret('remainder', remainderIndex);
         newCommitment = CryptoService.generateCommitment(remainderSecret, this.wallet);
+        remainderDerivationPath = `remainder/${remainderIndex}`;
       }
       
       // Execute unshield transaction
@@ -251,10 +289,43 @@ export default class LaserGun {
       const fee = parsedAmount * feePercent / feeDenominator;
       const netAmount = parsedAmount - fee;
       
+      // Update event counts (increment remainder if remainder was created)
+      const currentCounts = await this.getCurrentEventCounts();
+      const updatedCounts = createEventCounts({
+        shield: currentCounts.shield,
+        remainder: remainderAmount > 0n ? currentCounts.remainder + 1 : currentCounts.remainder,
+        received: currentCounts.received,
+        consolidate: currentCounts.consolidate,
+        lastUpdatedBlock: Math.max(receipt.blockNumber, currentCounts.lastUpdatedBlock)
+      });
+      
+      await this.storage.saveEventCounts(this.config.chainId, this.wallet, updatedCounts);
+      this.eventCounts = updatedCounts;
+      
+      // Save remainder shield if created
+      if (remainderAmount > 0n && remainderDerivationPath) {
+        const remainderIndex = currentCounts.remainder;
+        const remainderSecret = this.hdManager!.deriveSecret('remainder', remainderIndex);
+        
+        const remainderShield: Shield = {
+          secret: remainderSecret,
+          commitment: newCommitment,
+          token: tokenAddress,
+          amount: remainderAmount.toString(),
+          timestamp: Date.now(),
+          derivationPath: remainderDerivationPath,
+          hdIndex: remainderIndex,
+          hdOperation: 'remainder',
+          txHash: receipt.hash,
+          blockNumber: receipt.blockNumber
+        };
+        
+        await this.storage.saveShield(this.config.chainId, this.wallet, remainderShield);
+      }
+      
       // Save transaction record
-      const transactionNonce = await this.getNextNonce();
       const transaction: Transaction = {
-        nonce: transactionNonce,
+        nonce: Date.now(), // Use timestamp for unshield nonce
         type: 'unshield',
         txHash: receipt.hash,
         blockNumber: receipt.blockNumber,
@@ -272,7 +343,7 @@ export default class LaserGun {
         txHash: receipt.hash,
         amount: netAmount.toString(),
         fee: fee.toString(),
-        ...(remainderAmount > 0n && { remainderCommitment: newCommitment })
+        ...(remainderDerivationPath && { remainderDerivationPath })
       };
       
     } catch (error) {
@@ -284,7 +355,7 @@ export default class LaserGun {
   }
 
   /**
-   * Transfer tokens privately to another user
+   * Transfer tokens privately to another user with HD remainder handling
    */
   async transfer(
     secret: HexString,
@@ -321,9 +392,10 @@ export default class LaserGun {
         throw new LaserGunError('Recipient has not registered public key', ErrorCode.VALIDATION_ERROR);
       }
       
-      // Generate commitments
-      const recipientNonce = await this.getNextNonce();
-      const recipientSecret = CryptoService.generateSecret(this.keys!.privateKey as HexString, recipientNonce);
+      // Generate recipient commitment (recipient will use received/{theirIndex})
+      const currentCounts = await this.getCurrentEventCounts();
+      const receivedIndex = currentCounts.received; // This will be their received index
+      const recipientSecret = this.hdManager!.deriveSecret('received', receivedIndex);
       const recipientCommitment = CryptoService.generateCommitment(recipientSecret, recipientAddress);
       
       // Encrypt secret for recipient
@@ -333,10 +405,15 @@ export default class LaserGun {
       const tx = await this.contract.transfer(secret, parsedAmount, recipientCommitment, encryptedSecret);
       const receipt = await tx.wait();
       
+      // Calculate remainder (transfer doesn't have fees) 
+      let remainderDerivationPath: string | undefined;
+      
+      // If there's remainder, it will be created automatically by contract with userNonces
+      // Scanner will detect and recover it later
+      
       // Save transaction record
-      const transactionNonce = await this.getNextNonce();
       const transaction: Transaction = {
-        nonce: transactionNonce,
+        nonce: Date.now(), // Use timestamp for transfer nonce
         type: 'transfer',
         txHash: receipt.hash,
         blockNumber: receipt.blockNumber,
@@ -353,7 +430,8 @@ export default class LaserGun {
         success: true,
         txHash: receipt.hash,
         recipientCommitment,
-        amount: parsedAmount.toString()
+        amount: parsedAmount.toString(),
+        ...(remainderDerivationPath && { remainderDerivationPath })
       };
       
     } catch (error) {
@@ -365,7 +443,7 @@ export default class LaserGun {
   }
 
   /**
-   * Consolidate multiple shields into one
+   * Consolidate multiple shields into one with HD derivation
    */
   async consolidate(secrets: HexString[], tokenAddress: string): Promise<TransferResult> {
     this.ensureInitialized();
@@ -401,26 +479,57 @@ export default class LaserGun {
         throw new LaserGunError('Total amount must be positive', ErrorCode.INVALID_AMOUNT);
       }
       
-      // Generate new commitment for consolidated shield
-      const consolidateNonce = await this.getNextNonce();
-      const newSecret = CryptoService.generateSecret(this.keys!.privateKey as HexString, consolidateNonce);
+      // Generate new commitment for consolidated shield using HD
+      const currentCounts = await this.getCurrentEventCounts();
+      const consolidateIndex = currentCounts.consolidate;
+      const newSecret = this.hdManager!.deriveSecret('consolidate', consolidateIndex);
       const newCommitment = CryptoService.generateCommitment(newSecret, this.wallet);
       
       // Execute consolidate transaction
       const tx = await this.contract.consolidate(secrets, newCommitment);
       const receipt = await tx.wait();
       
+      // Store consolidated shield with HD metadata
+      const shield: Shield = {
+        secret: newSecret,
+        commitment: newCommitment,
+        token: tokenAddress,
+        amount: totalAmount.toString(),
+        timestamp: Date.now(),
+        derivationPath: `consolidate/${consolidateIndex}`,
+        hdIndex: consolidateIndex,
+        hdOperation: 'consolidate',
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber
+      };
+      
+      await this.storage.saveShield(this.config.chainId, this.wallet, shield);
+      
+      // Update event counts
+      const updatedCounts = createEventCounts({
+        shield: currentCounts.shield,
+        remainder: currentCounts.remainder,
+        received: currentCounts.received,
+        consolidate: currentCounts.consolidate + 1,
+        lastUpdatedBlock: Math.max(receipt.blockNumber, currentCounts.lastUpdatedBlock)
+      });
+      
+      await this.storage.saveEventCounts(this.config.chainId, this.wallet, updatedCounts);
+      this.eventCounts = updatedCounts;
+      
       // Save transaction record
-      const transactionNonce = await this.getNextNonce();
       const transaction: Transaction = {
-        nonce: transactionNonce,
-        type: 'transfer', // Consolidation is a type of internal transfer
+        nonce: consolidateIndex, // HD index as nonce
+        type: 'transfer', // Consolidation is internal transfer
         txHash: receipt.hash,
         blockNumber: receipt.blockNumber,
         timestamp: Date.now(),
         token: tokenAddress,
         amount: totalAmount.toString(),
-        commitment: newCommitment
+        commitment: newCommitment,
+        derivationPath: `consolidate/${consolidateIndex}`,
+        hdIndex: consolidateIndex,
+        hdOperation: 'consolidate'
       };
       
       await this.storage.saveTransaction(this.config.chainId, this.wallet, transaction.nonce, transaction);
@@ -429,7 +538,8 @@ export default class LaserGun {
         success: true,
         txHash: receipt.hash,
         recipientCommitment: newCommitment,
-        amount: totalAmount.toString()
+        amount: totalAmount.toString(),
+        derivationPath: `consolidate/${consolidateIndex}`
       };
       
     } catch (error) {
@@ -441,7 +551,7 @@ export default class LaserGun {
   }
 
   /**
-   * Get token balance (both public and private)
+   * Get token balance (both public and private) with blockchain verification
    */
   async getTokenBalance(tokenAddress: string): Promise<TokenBalance> {
     this.ensureInitialized();
@@ -452,42 +562,28 @@ export default class LaserGun {
       
       const tokenContract = new Contract(tokenAddress, LaserGun.ERC20_ABI, this.config.provider);
       
-      // Get token info
-      const [symbol, decimals, publicBalance, transactions] = await Promise.all([
+      // Get token info and public balance
+      const [symbol, decimals, publicBalance] = await Promise.all([
         tokenContract.symbol(),
         tokenContract.decimals(),
-        tokenContract.balanceOf(this.wallet),
-          this.storage.loadTransactions(this.config.chainId, this.wallet)
+        tokenContract.balanceOf(this.wallet)
       ]);
       
-      // Calculate private balance from active shields only
+      // Calculate private balance from active shields
       let privateBalance = 0n;
-
+      const shields = await this.storage.loadShields(this.config.chainId, this.wallet);
       
-      // Get all shield commitments from our transactions
-      const shieldCommitments = new Set<string>();
-      
-      for (const tx of transactions) {
-        if (tx.token.toLowerCase() === tokenAddress.toLowerCase() && tx.commitment) {
-          if (tx.type === 'shield' || tx.type === 'received') {
-            shieldCommitments.add(tx.commitment);
-          }
-        }
-      }
-      
-      // Check each commitment to see if it's still active and get actual balance
-      for (const commitment of shieldCommitments) {
-        try {
-          const isActive = await this.contract.isCommitmentActive(commitment);
-          if (isActive) {
-            const shieldInfo = await this.contract.getShieldInfo(commitment);
-            if (shieldInfo.exists && !shieldInfo.spent && shieldInfo.token.toLowerCase() === tokenAddress.toLowerCase()) {
-              privateBalance += BigInt(shieldInfo.amount.toString());
+      for (const shield of shields) {
+        if (shield.token.toLowerCase() === tokenAddress.toLowerCase()) {
+          try {
+            // Verify shield is still active on blockchain
+            const isActive = await this.contract.isCommitmentActive(shield.commitment);
+            if (isActive) {
+              privateBalance += BigInt(shield.amount);
             }
+          } catch {
+            // Skip invalid shields
           }
-        } catch (error) {
-          // Skip invalid commitments
-          continue;
         }
       }
       
@@ -505,8 +601,7 @@ export default class LaserGun {
   }
 
   /**
-   * Recover all data from blockchain (shields, transactions)
-   * Call this after localStorage clear or when switching devices
+   * Recover all data from blockchain using HD scanner
    */
   async recoverFromBlockchain(): Promise<{
     shieldsRecovered: number;
@@ -517,8 +612,11 @@ export default class LaserGun {
     try {
       await this.checkNetworkConnection();
       
-      // Use scanner's recovery mechanism
+      // Use scanner's HD recovery mechanism
       await this.scanner.recoverFromBlockchain();
+      
+      // Reload event counts after recovery
+      this.eventCounts = await this.storage.loadEventCounts(this.config.chainId, this.wallet);
       
       // Get counts for reporting
       const shields = await this.storage.loadShields(this.config.chainId, this.wallet);
@@ -532,420 +630,6 @@ export default class LaserGun {
     } catch (error) {
       throw this.createError(error, 'Failed to recover from blockchain');
     }
-  }
-
-  /**
-   * Check if we can recover a specific commitment
-   */
-  async canRecoverCommitment(commitment: string): Promise<{
-    canRecover: boolean;
-    secret?: string;
-    nonce?: number;
-  }> {
-    this.ensureInitialized();
-    
-    if (!this.keys) {
-      return { canRecover: false };
-    }
-
-    try {
-      // Check up to reasonable nonce limit
-      const maxNonce = Math.max(await this.storage.getLastNonce(this.config.chainId, this.wallet) + 100, 1000);
-      
-      for (let nonce = 0; nonce <= maxNonce; nonce++) {
-        const secret = CryptoService.generateSecret(this.keys.privateKey as HexString, nonce);
-        const testCommitment = CryptoService.generateCommitment(secret, this.wallet);
-        
-        if (testCommitment === commitment) {
-          return {
-            canRecover: true,
-            secret,
-            nonce
-          };
-        }
-      }
-      
-      return { canRecover: false };
-      
-    } catch (error) {
-      throw this.createError(error, 'Failed to check commitment recovery');
-    }
-  }
-
-  /**
-   * Get all active shields from blockchain (not from local storage)
-   * This queries the contract directly for current state
-   */
-  async getActiveShieldsFromBlockchain(): Promise<Array<{
-    commitment: string;
-    token: string;
-    amount: string;
-    timestamp: number;
-    secret?: string;
-    nonce?: number;
-  }>> {
-    this.ensureInitialized();
-    
-    try {
-      await this.checkNetworkConnection();
-      
-      const result: Array<{
-        commitment: string;
-        token: string;
-        amount: string;
-        timestamp: number;
-        secret?: string;
-        nonce?: number;
-      }> = [];
-      
-      // Get all Shielded events
-      const latestBlock = await this.config.provider.getBlockNumber();
-      const shieldedEvents = await this.contract.queryFilter(
-        this.contract.filters.Shielded(),
-        0,
-        latestBlock
-      );
-      
-      for (const event of shieldedEvents) {
-        const commitment = (event as EventLog).args.commitment;
-        
-        // Check if shield is still active
-        const isActive = await this.contract.isCommitmentActive(commitment);
-        if (!isActive) continue;
-        
-        const shieldInfo = await this.contract.getShieldInfo(commitment);
-        if (!shieldInfo.exists || shieldInfo.spent) continue;
-        
-        // Check if this is our commitment
-        const recoveryInfo = await this.canRecoverCommitment(commitment);
-        
-        result.push({
-          commitment,
-          token: shieldInfo.token,
-          amount: shieldInfo.amount.toString(),
-          timestamp: Number(shieldInfo.timestamp) * 1000,
-          ...(recoveryInfo.canRecover && {
-            secret: recoveryInfo.secret,
-            nonce: recoveryInfo.nonce
-          })
-        });
-      }
-      
-      return result;
-      
-    } catch (error) {
-      throw this.createError(error, 'Failed to get active shields from blockchain');
-    }
-  }
-
-  /**
-   * Sync local storage with blockchain state
-   * This ensures our local data matches blockchain reality
-   */
-  async syncWithBlockchain(): Promise<{
-    added: number;
-    removed: number;
-    updated: number;
-  }> {
-    this.ensureInitialized();
-    
-    try {
-      const stats = { added: 0, removed: 0, updated: 0 };
-      
-      // First recover any missing data
-      await this.recoverFromBlockchain();
-      
-      // Get our local shields
-      const localShields = await this.storage.loadShields(this.config.chainId, this.wallet);
-      
-      // Check each local shield against blockchain
-      for (const localShield of localShields) {
-        const isActive = await this.contract.isCommitmentActive(localShield.commitment);
-        
-        if (!isActive) {
-          // Shield was spent, remove from local storage
-          await this.storage.deleteShield(this.config.chainId, this.wallet, localShield.commitment);
-          stats.removed++;
-        }
-      }
-      
-      // Get blockchain shields and ensure we have them locally
-      const blockchainShields = await this.getActiveShieldsFromBlockchain();
-      
-      for (const blockchainShield of blockchainShields) {
-        if (blockchainShield.secret && blockchainShield.nonce !== undefined) {
-          // This is our shield, check if we have it locally
-          const localShield = await this.storage.getShield(this.config.chainId, this.wallet, blockchainShield.commitment);
-          
-          if (!localShield) {
-            // Add missing shield
-            const shield: Shield = {
-              secret: blockchainShield.secret,
-              commitment: blockchainShield.commitment,
-              token: blockchainShield.token,
-              amount: blockchainShield.amount,
-              timestamp: blockchainShield.timestamp
-            };
-            
-            await this.storage.saveShield(this.config.chainId, this.wallet, shield);
-            stats.added++;
-          } else if (localShield.amount !== blockchainShield.amount) {
-            // Update amount if different (shouldn't happen but just in case)
-            const updatedShield: Shield = {
-              ...localShield,
-              amount: blockchainShield.amount
-            };
-            
-            await this.storage.saveShield(this.config.chainId, this.wallet, updatedShield);
-            stats.updated++;
-          }
-        }
-      }
-      
-      return stats;
-      
-    } catch (error) {
-      throw this.createError(error, 'Failed to sync with blockchain');
-    }
-  }
-
-  /**
-   * Get comprehensive balance that always reflects blockchain reality
-   */
-  async getTokenBalanceFromBlockchain(tokenAddress: string): Promise<TokenBalance & {
-    activeShields: Array<{
-      commitment: string;
-      amount: string;
-      timestamp: number;
-    }>;
-  }> {
-    this.ensureInitialized();
-    
-    try {
-      await this.checkNetworkConnection();
-      
-      const tokenContract = new Contract(tokenAddress, LaserGun.ERC20_ABI, this.config.provider);
-      
-      // Get token info and public balance
-      const [symbol, decimals, publicBalance] = await Promise.all([
-        tokenContract.symbol(),
-        tokenContract.decimals(),
-        tokenContract.balanceOf(this.wallet)
-      ]);
-      
-      // Get our active shields from blockchain
-      const blockchainShields = await this.getActiveShieldsFromBlockchain();
-      
-      // Calculate private balance and collect active shields for this token
-      let privateBalance = 0n;
-      const activeShields: Array<{
-        commitment: string;
-        amount: string;
-        timestamp: number;
-      }> = [];
-      
-      for (const shield of blockchainShields) {
-        if (shield.token.toLowerCase() === tokenAddress.toLowerCase() && shield.secret) {
-          const amount = BigInt(shield.amount);
-          privateBalance += amount;
-          
-          activeShields.push({
-            commitment: shield.commitment,
-            amount: shield.amount,
-            timestamp: shield.timestamp
-          });
-        }
-      }
-      
-      return {
-        token: tokenAddress,
-        symbol,
-        decimals,
-        publicBalance: publicBalance.toString(),
-        privateBalance: privateBalance.toString(),
-        activeShields
-      };
-      
-    } catch (error) {
-      throw this.createError(error, 'Failed to get token balance from blockchain');
-    }
-  }
-
-  /**
-   * Emergency recovery: scan entire blockchain for our commitments
-   * Use this if you suspect data loss or corruption
-   */
-  async emergencyRecovery(fromBlock: number = 0): Promise<{
-    shieldsFound: number;
-    transactionsCreated: number;
-    errors: string[];
-  }> {
-    this.ensureInitialized();
-    
-    try {
-      const stats = {
-        shieldsFound: 0,
-        transactionsCreated: 0,
-        errors: [] as string[]
-      };
-      
-      console.log('Starting emergency recovery from blockchain...');
-      
-      const latestBlock = await this.config.provider.getBlockNumber();
-      const batchSize = 10000;
-      
-      // Generate our possible secrets cache (extended range)
-      const maxNonce = Math.max(await this.storage.getLastNonce(this.config.chainId, this.wallet) + 200, 2000);
-      const ourCommitments = new Map<string, {secret: HexString, nonce: number}>();
-      
-      console.log(`Generating ${maxNonce} possible secrets...`);
-      
-      for (let nonce = 0; nonce <= maxNonce; nonce++) {
-        const secret = CryptoService.generateSecret(this.keys!.privateKey as HexString, nonce);
-        const commitment = CryptoService.generateCommitment(secret, this.wallet);
-        ourCommitments.set(commitment, { secret, nonce });
-      }
-      
-      console.log(`Scanning blocks ${fromBlock} to ${latestBlock}...`);
-      
-      // Scan in batches
-      for (let blockStart = fromBlock; blockStart <= latestBlock; blockStart += batchSize) {
-        const blockEnd = Math.min(blockStart + batchSize - 1, latestBlock);
-        
-        try {
-          console.log(`Scanning blocks ${blockStart}-${blockEnd}...`);
-          
-          // Get all Shielded events in this batch
-          const shieldedEvents = await this.contract.queryFilter(
-            this.contract.filters.Shielded(),
-            blockStart,
-            blockEnd
-          );
-          
-          for (const event of shieldedEvents) {
-            const commitment = (event as EventLog).args.commitment;
-            const ourCommitment = ourCommitments.get(commitment);
-            
-            if (ourCommitment) {
-              // This is our shield!
-              console.log(`Found our shield: ${commitment}`);
-              
-              // Check if we already have it
-              const existingShield = await this.storage.getShield(this.config.chainId, this.wallet, commitment);
-              
-              if (!existingShield) {
-                // Save shield
-                const shield: Shield = {
-                  secret: ourCommitment.secret,
-                  commitment: commitment,
-                  token: (event as EventLog).args.token,
-                  amount: (event as EventLog).args.amount.toString(),
-                  timestamp: Date.now()
-                };
-                
-                await this.storage.saveShield(this.config.chainId, this.wallet, shield);
-                stats.shieldsFound++;
-                
-                // Create transaction record
-                const block = await this.config.provider.getBlock(event.blockNumber);
-                const timestamp = block ? block.timestamp * 1000 : Date.now();
-                
-                const transaction: Transaction = {
-                  nonce: ourCommitment.nonce,
-                  type: 'shield',
-                  txHash: event.transactionHash,
-                  blockNumber: event.blockNumber,
-                  timestamp: timestamp,
-                  token: (event as EventLog).args.token,
-                  amount: (event as EventLog).args.amount.toString(),
-                  commitment: commitment,
-                  fee: (event as EventLog).args.fee.toString()
-                };
-                
-                await this.storage.saveTransaction(this.config.chainId, this.wallet, transaction.nonce, transaction);
-                stats.transactionsCreated++;
-              }
-            }
-          }
-          
-        } catch (error) {
-          const errorMsg = `Failed to scan blocks ${blockStart}-${blockEnd}: ${error instanceof Error ? error.message : 'Unknown error'}`;
-          stats.errors.push(errorMsg);
-          console.error(errorMsg);
-        }
-        
-        // Small delay to prevent rate limiting
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-      
-      console.log('Emergency recovery completed:', stats);
-      return stats;
-      
-    } catch (error) {
-      throw this.createError(error, 'Emergency recovery failed');
-    }
-  }
-
-  /**
-   * Validate data integrity between local storage and blockchain
-   */
-  async validateDataIntegrity(): Promise<{
-    isValid: boolean;
-    issues: string[];
-    suggestions: string[];
-  }> {
-    this.ensureInitialized();
-    
-    const result = {
-      isValid: true,
-      issues: [] as string[],
-      suggestions: [] as string[]
-    };
-    
-    try {
-      // Check if all local shields exist and are active on blockchain
-      const localShields = await this.storage.loadShields(this.config.chainId, this.wallet);
-      
-      for (const shield of localShields) {
-        const isActive = await this.contract.isCommitmentActive(shield.commitment);
-        
-        if (!isActive) {
-          result.isValid = false;
-          result.issues.push(`Shield ${shield.commitment} is inactive on blockchain but exists locally`);
-          result.suggestions.push(`Run syncWithBlockchain() to clean up spent shields`);
-        }
-        
-        const shieldInfo = await this.contract.getShieldInfo(shield.commitment);
-        if (shieldInfo.exists && shieldInfo.amount.toString() !== shield.amount) {
-          result.isValid = false;
-          result.issues.push(`Shield ${shield.commitment} amount mismatch: local=${shield.amount}, blockchain=${shieldInfo.amount}`);
-          result.suggestions.push(`Run syncWithBlockchain() to update amounts`);
-        }
-      }
-      
-      // Check if we're missing any shields from blockchain
-      const blockchainShields = await this.getActiveShieldsFromBlockchain();
-      const localCommitments = new Set(localShields.map(s => s.commitment));
-      
-      for (const blockchainShield of blockchainShields) {
-        if (blockchainShield.secret && !localCommitments.has(blockchainShield.commitment)) {
-          result.isValid = false;
-          result.issues.push(`Missing shield ${blockchainShield.commitment} from local storage`);
-          result.suggestions.push(`Run recoverFromBlockchain() to restore missing shields`);
-        }
-      }
-      
-      if (result.isValid) {
-        result.suggestions.push('Data integrity is good!');
-      }
-      
-    } catch (error) {
-      result.isValid = false;
-      result.issues.push(`Failed to validate data integrity: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      result.suggestions.push('Check network connection and try again');
-    }
-    
-    return result;
   }
 
   /**
@@ -971,49 +655,6 @@ export default class LaserGun {
       return await this.storage.loadShields(this.config.chainId, this.wallet);
     } catch (error) {
       throw this.createError(error, 'Failed to load user shields');
-    }
-  }
-
-  /**
-   * Get shields for specific token
-   */
-  async getTokenShields(tokenAddress: string): Promise<Shield[]> {
-    this.ensureInitialized();
-    
-    try {
-      const allShields = await this.storage.loadShields(this.config.chainId, this.wallet);
-      return allShields.filter(shield => 
-        shield.token.toLowerCase() === tokenAddress.toLowerCase()
-      );
-    } catch (error) {
-      throw this.createError(error, 'Failed to load token shields');
-    }
-  }
-
-  /**
-   * Clean up spent shields from storage
-   */
-  async cleanupSpentShields(): Promise<void> {
-    this.ensureInitialized();
-    
-    try {
-      await this.checkNetworkConnection();
-      
-      const shields = await this.storage.loadShields(this.config.chainId, this.wallet);
-      
-      for (const shield of shields) {
-        try {
-          const isActive = await this.contract.isCommitmentActive(shield.commitment);
-          if (!isActive) {
-            await this.storage.deleteShield(this.config.chainId, this.wallet, shield.commitment);
-          }
-        } catch (error) {
-          // Skip shield if we can't check its status
-          continue;
-        }
-      }
-    } catch (error) {
-      throw this.createError(error, 'Failed to cleanup spent shields');
     }
   }
 
@@ -1080,6 +721,13 @@ export default class LaserGun {
     return this.scanner;
   }
 
+  /**
+   * Get current event counts
+   */
+  async getEventCounts(): Promise<EventCounts> {
+    return await this.getCurrentEventCounts();
+  }
+
   // Private helper methods
 
   private validateConfig(config: LaserGunConfig): void {
@@ -1101,7 +749,7 @@ export default class LaserGun {
   }
 
   private ensureInitialized(): void {
-    if (!this.wallet || !this.keys) {
+    if (!this.wallet || !this.keys || !this.hdManager) {
       throw new LaserGunError('LaserGun not initialized. Call initialize() first.', ErrorCode.INVALID_CONFIG);
     }
   }
@@ -1124,6 +772,19 @@ export default class LaserGun {
       const tx = await this.contract.registerPublicKey(this.keys.publicKey);
       await tx.wait();
     }
+  }
+
+  private async getCurrentEventCounts(): Promise<EventCounts> {
+    if (this.eventCounts) {
+      return this.eventCounts;
+    }
+    
+    // Load or create default event counts
+    this.eventCounts = await this.storage.loadEventCounts(this.config.chainId, this.wallet) || createEventCounts({
+      lastUpdatedBlock: await this.config.provider.getBlockNumber()
+    });
+    
+    return this.eventCounts;
   }
 
   private async getTokenDecimals(tokenAddress: string): Promise<number> {
@@ -1169,10 +830,6 @@ export default class LaserGun {
         error
       );
     }
-  }
-
-  private async getNextNonce(): Promise<number> {
-    return await this.storage.getLastNonce(this.config.chainId, this.wallet) + 1;
   }
  
   private createError(error: unknown, message: string): LaserGunError {

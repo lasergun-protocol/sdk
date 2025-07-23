@@ -5,8 +5,179 @@ import type { CryptoKeys, HexString } from '../types';
 import { LaserGunError, ErrorCode } from '../types';
 
 /**
- * Crypto utilities for LaserGun SDK
- * Handles ECIES encryption, key generation, and commitment creation
+ * Supported HD derivation operations
+ */
+export enum HDOperation {
+  SHIELD = 'shield',
+  REMAINDER = 'remainder', 
+  RECEIVED = 'received',
+  CONSOLIDATE = 'consolidate'
+}
+
+/**
+ * Maximum allowed index for HD derivation (safety limit)
+ */
+export const MAX_HD_INDEX = 10000;
+
+/**
+ * HD Secret Manager for hierarchical secret derivation
+ * Uses derivation paths like HD wallets: operation/index
+ */
+export class HDSecretManager {
+  private readonly masterSeed: HexString;
+  private readonly walletAddress: string;
+  private readonly chainId: number;
+  
+  constructor(privateKey: HexString, walletAddress: string, chainId: number) {
+    if (!CryptoService.isValidHexString(privateKey)) {
+      throw new LaserGunError('Invalid private key format', ErrorCode.CRYPTO_ERROR);
+    }
+    if (!CryptoService.isValidAddress(walletAddress)) {
+      throw new LaserGunError('Invalid wallet address', ErrorCode.CRYPTO_ERROR);
+    }
+    if (chainId <= 0) {
+      throw new LaserGunError('Invalid chain ID', ErrorCode.CRYPTO_ERROR);
+    }
+    
+    this.walletAddress = walletAddress.toLowerCase();
+    this.chainId = chainId;
+    
+    // Generate deterministic master seed for this wallet/chain
+    this.masterSeed = keccak256(
+      solidityPacked(
+        ['bytes32', 'address', 'uint256', 'string'],
+        [privateKey, walletAddress, chainId, 'LASERGUN_HD_MASTER_V1']
+      )
+    ) as HexString;
+  }
+  
+  /**
+   * Generate secret by hierarchical derivation path
+   * @param operation - Type of operation (must be valid HDOperation)
+   * @param index - Index within operation type (0 to MAX_HD_INDEX)
+   * @returns Deterministic secret for this path
+   */
+  deriveSecret(operation: HDOperation | string, index: number): HexString {
+    this.validateDerivationParams(operation, index);
+    
+    const path = `${operation}/${index}`;
+    
+    try {
+      return keccak256(
+        solidityPacked(
+          ['bytes32', 'string'],
+          [this.masterSeed, path]
+        )
+      ) as HexString;
+    } catch (error) {
+      throw new LaserGunError(
+        `Failed to derive secret for path ${path}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        ErrorCode.CRYPTO_ERROR,
+        error
+      );
+    }
+  }
+  
+  /**
+   * Generate multiple secrets for operation type with memory efficiency
+   * @param operation - Operation type
+   * @param count - Number of secrets to generate (max MAX_HD_INDEX)
+   * @returns Generator for memory-efficient processing
+   */
+  *deriveMultipleSecrets(operation: HDOperation | string, count: number): Generator<{secret: HexString, index: number, path: string}> {
+    this.validateDerivationParams(operation, 0); // Validate operation
+    
+    if (count <= 0 || count > MAX_HD_INDEX) {
+      throw new LaserGunError(
+        `Invalid count ${count}. Must be between 1 and ${MAX_HD_INDEX}`,
+        ErrorCode.CRYPTO_ERROR
+      );
+    }
+    
+    for (let i = 0; i < count; i++) {
+      const secret = this.deriveSecret(operation, i);
+      yield {
+        secret,
+        index: i,
+        path: `${operation}/${i}`
+      };
+    }
+  }
+  
+  /**
+   * Recover secret by full derivation path
+   * @param path - Full path like "shield/5" or "remainder/2"
+   * @returns Secret for this exact path
+   */
+  recoverSecretByPath(path: string): HexString {
+    if (!path || typeof path !== 'string') {
+      throw new LaserGunError('Path must be a non-empty string', ErrorCode.CRYPTO_ERROR);
+    }
+    
+    const parts = path.split('/');
+    if (parts.length !== 2) {
+      throw new LaserGunError(
+        `Invalid path format ${path}. Expected "operation/index"`,
+        ErrorCode.CRYPTO_ERROR
+      );
+    }
+    
+    const [operation, indexStr] = parts;
+    const index = parseInt(indexStr, 10);
+    
+    if (isNaN(index)) {
+      throw new LaserGunError(
+        `Invalid index in path ${path}. Index must be a number`,
+        ErrorCode.CRYPTO_ERROR
+      );
+    }
+    
+    return this.deriveSecret(operation, index);
+  }
+  
+  /**
+   * Validate derivation parameters
+   */
+  private validateDerivationParams(operation: HDOperation | string, index: number): void {
+    // Validate operation
+    const validOperations = Object.values(HDOperation);
+    if (!validOperations.includes(operation as HDOperation)) {
+      throw new LaserGunError(
+        `Invalid operation ${operation}. Must be one of: ${validOperations.join(', ')}`,
+        ErrorCode.CRYPTO_ERROR
+      );
+    }
+    
+    // Validate index
+    if (!Number.isInteger(index) || index < 0 || index > MAX_HD_INDEX) {
+      throw new LaserGunError(
+        `Invalid index ${index}. Must be integer between 0 and ${MAX_HD_INDEX}`,
+        ErrorCode.CRYPTO_ERROR
+      );
+    }
+  }
+  
+  /**
+   * Get master seed (for debugging/verification only)
+   */
+  getMasterSeed(): HexString {
+    return this.masterSeed;
+  }
+  
+  /**
+   * Get wallet context
+   */
+  getContext(): {walletAddress: string, chainId: number} {
+    return {
+      walletAddress: this.walletAddress,
+      chainId: this.chainId
+    };
+  }
+}
+
+/**
+ * Enhanced crypto service with HD derivation support
+ * Handles ECIES encryption, key generation, and HD secret management
  */
 export class CryptoService {
   private static readonly DEFAULT_SIGN_MESSAGE = '\x19Ethereum Signed Message:\nLaserGun Key';
@@ -40,6 +211,21 @@ export class CryptoService {
     } catch (error) {
       throw new LaserGunError(
         `Failed to generate keys: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        ErrorCode.CRYPTO_ERROR,
+        error
+      );
+    }
+  }
+
+  /**
+   * Create HD Secret Manager instance with validation
+   */
+  static createHDManager(privateKey: HexString, walletAddress: string, chainId: number): HDSecretManager {
+    try {
+      return new HDSecretManager(privateKey, walletAddress, chainId);
+    } catch (error) {
+      throw new LaserGunError(
+        `Failed to create HD manager: ${error instanceof Error ? error.message : 'Unknown error'}`,
         ErrorCode.CRYPTO_ERROR,
         error
       );
@@ -94,7 +280,7 @@ export class CryptoService {
       
       return `0x${decrypted.toString('hex')}`;
     } catch (error) {
-      // Return null if decryption fails (not our secret) - как в проекте
+      // Return null if decryption fails (not our secret)
       return null;
     }
   }
@@ -116,6 +302,7 @@ export class CryptoService {
 
   /**
    * Generate deterministic commitment for sender (for remainder shields)
+   * NOTE: This is kept for compatibility with contract's generateSenderCommitment
    */
   static generateSenderCommitment(sender: string, nonce: number): HexString {
     try {
@@ -129,6 +316,10 @@ export class CryptoService {
     }
   }
 
+  /**
+   * @deprecated Use HDSecretManager.deriveSecret instead
+   * Generate secret using old nonce-based method (kept for compatibility)
+   */
   static generateSecret(privateKey: HexString, nonce: number): HexString {
     try {
       return keccak256(solidityPacked(['bytes32', 'uint256'], [privateKey, nonce])) as HexString;
