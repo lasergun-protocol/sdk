@@ -1,19 +1,23 @@
-import { parseUnits } from 'ethers';
 import type { 
   IStorageAdapter, 
-  Transaction,
   TransferResult,
   HexString,
   EventCounts 
 } from '../types';
-import { LaserGunError, ErrorCode } from '../types';
-import { CryptoService, HDSecretManager } from '../crypto';
+import { HDSecretManager } from '../crypto';
 import { LaserGunConfigManager } from '../core/config';
 import { TokenManager } from './tokenOperations';
+import { 
+  ValidationUtils, 
+  HDHelpers, 
+  ErrorHelpers, 
+  StorageHelpers,
+  ContractHelpers 
+} from '../utils';
 
 /**
- * Transfer-related operations module
- * Handles private transfers between users
+ * Transfer-related operations module (REFACTORED)
+ * Handles private transfers between users with utilities
  */
 export class TransferOperations {
   private readonly configManager: LaserGunConfigManager;
@@ -32,61 +36,17 @@ export class TransferOperations {
     this.tokenManager = tokenManager;
   }
 
-  /**
-   * Set HD manager (after initialization)
-   */
   setHDManager(hdManager: HDSecretManager): void {
     this.hdManager = hdManager;
   }
 
-  /**
-   * Set event counts (from storage or initialization)
-   */
   setEventCounts(eventCounts: EventCounts): void {
     this.eventCounts = eventCounts;
   }
 
   /**
-   * Validate shield info and return common data
-   * DRY principle - shared with shield operations
-   */
-  private async validateAndGetShieldInfo(secret: HexString, amount: string): Promise<{
-    commitment: HexString;
-    shieldInfo: any;
-    tokenDecimals: number;
-    parsedAmount: bigint;
-  }> {
-    if (!CryptoService.isValidHexString(secret)) {
-      throw new LaserGunError('Invalid secret format', ErrorCode.VALIDATION_ERROR);
-    }
-    
-    const wallet = this.configManager.getWallet();
-    const contract = this.configManager.getContract();
-    
-    const commitment = CryptoService.generateCommitment(secret, wallet);
-    const shieldInfo = await contract.getShieldInfo(commitment);
-    
-    if (!shieldInfo.exists || shieldInfo.spent) {
-      throw new LaserGunError('Shield does not exist or already spent', ErrorCode.SHIELD_NOT_FOUND);
-    }
-    
-    const tokenDecimals = await this.tokenManager.getTokenDecimals(shieldInfo.token);
-    const parsedAmount = parseUnits(amount, tokenDecimals);
-    
-    if (parsedAmount <= 0n) {
-      throw new LaserGunError('Amount must be positive', ErrorCode.INVALID_AMOUNT);
-    }
-    
-    if (shieldInfo.amount < parsedAmount) {
-      throw new LaserGunError('Insufficient shield balance', ErrorCode.INSUFFICIENT_BALANCE);
-    }
-    
-    return { commitment, shieldInfo, tokenDecimals, parsedAmount };
-  }
-
-  /**
    * Transfer tokens privately to another user
-   * ✅ CORRECT: Creates transfer transaction with its own HD index
+   * Creates transfer transaction with its own HD index
    */
   async transfer(
     secret: HexString,
@@ -94,45 +54,27 @@ export class TransferOperations {
     recipientCommitment: HexString,
     encryptedSecret: string
   ): Promise<TransferResult> {
-    this.ensureInitialized();
+    ValidationUtils.validateInitialization(this.hdManager, this.eventCounts, 'TransferOperations');
     
     try {
-      // Validate recipient commitment
-      if (!CryptoService.isValidHexString(recipientCommitment)) {
-        throw new LaserGunError('Invalid recipient commitment', ErrorCode.VALIDATION_ERROR);
-      }
-      
-      if (!encryptedSecret || encryptedSecret === '0x') {
-        throw new LaserGunError('Encrypted secret is required', ErrorCode.VALIDATION_ERROR);
-      }
+      // Validate all transfer parameters
+      ValidationUtils.validateRecipientParams(recipientCommitment, encryptedSecret);
       
       // Validate shield and get info
-      const { commitment, shieldInfo, parsedAmount } = await this.validateAndGetShieldInfo(secret, amount);
+      const { commitment, shieldInfo, parsedAmount } = await ValidationUtils.validateAndGetShieldInfo(
+        secret, amount, this.configManager, this.tokenManager
+      );
       
       // Execute transfer transaction
       const contract = this.configManager.getContract();
       const tx = await contract.transfer(secret, parsedAmount, recipientCommitment, encryptedSecret);
-      const receipt = await tx.wait();
+      const receipt = await ContractHelpers.waitForTransaction(tx);
       
-      // ✅ CORRECT HD: Transfer operation gets its OWN HD derivation
-      // Use current total operations as HD index for transfer operations
-      const currentCounts = this.getCurrentEventCounts();
-      const transferIndex = currentCounts.shield + currentCounts.remainder + currentCounts.received + currentCounts.consolidate;
-      
-      const transferTransaction: Transaction = {
-        nonce: transferIndex, // ✅ CORRECT: transfer gets its own sequential HD index  
-        type: 'transfer', // ✅ CORRECT: type = 'transfer'
-        txHash: receipt.hash,
-        blockNumber: receipt.blockNumber,
-        timestamp: Date.now(),
-        token: shieldInfo.token,
-        amount: parsedAmount.toString(),
-        commitment: recipientCommitment, // Target commitment
-        from: commitment // Source commitment (consumed shield) - NOTE: Need to add to types
-      };
-      
-      const { chainId, wallet } = this.getStorageContext();
-      await this.storage.saveTransaction(chainId, wallet, transferTransaction.nonce, transferTransaction);
+      // Save transfer transaction with sequential HD index
+      await this.saveTransferTransaction(
+        receipt, shieldInfo.token, parsedAmount.toString(), 
+        recipientCommitment, commitment
+      );
       
       return {
         success: true,
@@ -144,23 +86,42 @@ export class TransferOperations {
     } catch (error) {
       return {
         success: false,
-        error: this.createError(error, 'Failed to transfer tokens')
+        error: ErrorHelpers.createError(error, 'Failed to transfer tokens')
       };
     }
   }
 
-  // Helper methods
-  private ensureInitialized(): void {
-    if (!this.hdManager || !this.eventCounts) {
-      throw new LaserGunError('TransferOperations not properly initialized', ErrorCode.INVALID_CONFIG);
-    }
-  }
-
-  private getCurrentEventCounts(): EventCounts {
-    if (!this.eventCounts) {
-      throw new LaserGunError('Event counts not initialized', ErrorCode.INVALID_CONFIG);
-    }
-    return this.eventCounts;
+  /**
+   * Save transfer transaction (non-HD operation with sequential index)
+   */
+  private async saveTransferTransaction(
+    receipt: any,
+    token: string,
+    amount: string,
+    recipientCommitment: HexString,
+    sourceCommitment: HexString
+  ): Promise<void> {
+    const { chainId, wallet } = this.getStorageContext();
+    
+    // Transfer gets sequential index across all operations
+    const transferIndex = HDHelpers.getSequentialIndex(this.eventCounts!);
+    
+    const transaction = HDHelpers.createHDTransaction(
+      transferIndex,
+      'transfer',
+      receipt.hash,
+      receipt.blockNumber,
+      token,
+      amount,
+      recipientCommitment,
+      undefined, // No HD operation for transfers
+      undefined, // No HD index for transfers
+      { 
+        from: sourceCommitment // Source commitment (consumed shield)
+      }
+    );
+    
+    await StorageHelpers.saveTransactionSafely(this.storage, chainId, wallet, transaction);
   }
 
   private getStorageContext(): { chainId: number; wallet: string } {
@@ -168,17 +129,5 @@ export class TransferOperations {
       chainId: this.configManager.getConfig().chainId,
       wallet: this.configManager.getWallet()
     };
-  }
-
-  private createError(error: unknown, message: string): LaserGunError {
-    if (error instanceof LaserGunError) {
-      return error;
-    }
-    
-    return new LaserGunError(
-      `${message}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      ErrorCode.CONTRACT_ERROR,
-      error
-    );
   }
 }
