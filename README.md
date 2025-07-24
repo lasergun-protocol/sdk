@@ -1,6 +1,6 @@
 # LaserGun SDK
 
-[![npm version](https://badge.fury.io/js/@lasergun-protocol/sdk.svg)](https://badge.fury.io/js/@lasergun-protocol/sdk)
+[![npm version](https://badge.fury.io/js/@lasergun-protocol%2Fsdk.svg)](https://badge.fury.io/js/@lasergun-protocol%2Fsdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg)](https://www.typescriptlang.org/)
 
@@ -26,6 +26,10 @@ LaserGun SDK enables completely anonymous ERC20 token transfers using commitment
 ```bash
 npm install @lasergun-protocol/sdk ethers
 ```
+### Public LaserGun addresses in the chains
+
+Polygon Amoy (testnet): 0x8bFE87a6309cb23Af0c15fc1c770dAE384AE3F1F
+Avalanche: 0xAe5F7c2cE15A408c383788d59DE0385a542F7593
 
 ### Basic Usage
 
@@ -471,8 +475,8 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - **Website**: [https://lasergun.xyz](https://lasergun.xyz)
 - **Documentation**: [https://docs.lasergun.xyz](https://docs.lasergun.xyz)
 - **Contract Repository**: [https://github.com/lasergun-protocol/contracts](https://github.com/lasergun-protocol/contracts)
-- **Discord**: [https://discord.gg/lasergun](https://discord.gg/lasergun)
-- **Twitter**: [@LaserGunProto](https://twitter.com/LaserGunProto)
+- **Discord**: [https://discord.gg/CQXM99fCbn](https://discord.gg/CQXM99fCbn)
+- **Twitter**: [@LaserGunProto](https://x.com/lasergun_proto)
 
 ---
 
