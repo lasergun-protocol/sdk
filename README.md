@@ -1,6 +1,6 @@
 # LaserGun SDK
 
-[![npm version](https://badge.fury.io/js/@lasergun-protocol/sdk.svg)](https://badge.fury.io/js/@lasergun/sdk)
+[![npm version](https://badge.fury.io/js/@lasergun-protocol/sdk.svg)](https://badge.fury.io/js/@lasergun-protocol/sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg)](https://www.typescriptlang.org/)
 
@@ -24,13 +24,13 @@ LaserGun SDK enables completely anonymous ERC20 token transfers using commitment
 ### Installation
 
 ```bash
-npm install @lasergun/sdk ethers
+npm install @lasergun-protocol/sdk ethers
 ```
 
 ### Basic Usage
 
 ```typescript
-import { LaserGun, recovery } from '@lasergun/sdk';
+import { LaserGun, recovery } from '@lasergun-protocol/sdk';
 import { ethers } from 'ethers';
 
 // Setup provider and signer
@@ -113,7 +113,7 @@ LaserGun SDK automatically recovers your data from the blockchain if localStorag
 ### Automatic Recovery
 
 ```typescript
-import { recovery } from '@lasergun/sdk';
+import { recovery } from '@lasergun-protocol/sdk';
 
 // Automatically recovers all data on creation
 const lasergun = await recovery.createWithRecovery(config);
@@ -226,7 +226,7 @@ lasergun.onStateChange((state) => {
 ### Storage Adapters
 
 ```typescript
-import { LocalStorageAdapter } from '@lasergun/sdk';
+import { LocalStorageAdapter } from '@lasergun-protocol/sdk';
 
 // Built-in localStorage adapter
 const storage = new LocalStorageAdapter();
@@ -304,7 +304,7 @@ const freshBalance = await lasergun.getTokenBalanceFromBlockchain(token);
 
 ```typescript
 import { useEffect, useState } from 'react';
-import { LaserGun, recovery } from '@lasergun/sdk';
+import { LaserGun, recovery } from '@lasergun-protocol/sdk';
 
 export function useLaserGun(config) {
   const [lasergun, setLaserGun] = useState<LaserGun | null>(null);
@@ -334,7 +334,7 @@ export function useLaserGun(config) {
 
 ```typescript
 import { ref, onMounted } from 'vue';
-import { LaserGun, recovery } from '@lasergun/sdk';
+import { LaserGun, recovery } from '@lasergun-protocol/sdk';
 
 export function useLaserGun(config) {
   const lasergun = ref<LaserGun | null>(null);
