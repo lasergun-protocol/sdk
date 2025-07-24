@@ -205,7 +205,7 @@ export const examples = {
    */
   init: `
 // Recommended initialization with auto-recovery
-import { recovery } from '@lasergun/sdk';
+import { recovery } from '@lasergun-protocol/sdk';
 
 const lasergun = await recovery.createWithRecovery({
   contractAddress: '0x...',
