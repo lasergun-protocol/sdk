@@ -1,5 +1,5 @@
 {
-  "name": "@lasergun/sdk",
+  "name": "@lasergun-protocol/sdk",
   "version": "1.0.0",
   "description": "TypeScript SDK for LaserGun privacy protocol - anonymous ERC20 transfers",
   "main": "dist/index.js",
@@ -42,7 +42,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lasergun-protocol/sdk"
+    "url": "git+https://github.com/lasergun-protocol/sdk.git"
   },
   "bugs": {
     "url": "https://github.com/lasergun-protocol/sdk/issues"

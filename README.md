@@ -1,6 +1,6 @@
 # LaserGun SDK
 
-[![npm version](https://badge.fury.io/js/@lasergun/sdk.svg)](https://badge.fury.io/js/@lasergun/sdk)
+[![npm version](https://badge.fury.io/js/@lasergun-protocol/sdk.svg)](https://badge.fury.io/js/@lasergun/sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg)](https://www.typescriptlang.org/)
 
