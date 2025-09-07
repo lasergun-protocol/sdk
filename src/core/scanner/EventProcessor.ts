@@ -83,6 +83,7 @@ export class EventProcessor {
         event.blockNumber,
         shieldInfo.token,
         shieldInfo.amount.toString(),
+        '0',
         commitment,
         'received',
         newReceivedIndex
