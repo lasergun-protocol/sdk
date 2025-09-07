@@ -34,6 +34,7 @@ export class LaserGunConfigManager {
     // Fee info
     'function shieldFeePercent() external view returns (uint256)',
     'function unshieldFeePercent() external view returns (uint256)',
+    'function transferFeePercent() external view returns (uint256)',
     'function FEE_DENOMINATOR() external view returns (uint256)',
     
     // Events

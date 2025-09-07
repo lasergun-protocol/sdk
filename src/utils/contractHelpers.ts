@@ -81,19 +81,22 @@ export class ContractHelpers {
   static async getFeeInfo(contract: Contract): Promise<{
     shieldFeePercent: bigint;
     unshieldFeePercent: bigint;
+    transferFeePercent: bigint;
     feeDenominator: bigint;
   }> {
     try {
-      const [shieldFee, unshieldFee, denominator] = await Promise.all([
+      const [shieldFeePercent, unshieldFeePercent, transferFeePercent, feeDenominator] = await Promise.all([
         contract.shieldFeePercent(),
         contract.unshieldFeePercent(),
+        contract.transferFeePercent(),
         contract.FEE_DENOMINATOR()
       ]);
 
       return {
-        shieldFeePercent: shieldFee,
-        unshieldFeePercent: unshieldFee,
-        feeDenominator: denominator
+        shieldFeePercent ,
+        unshieldFeePercent ,
+        transferFeePercent,
+        feeDenominator
       };
     } catch (error) {
       throw ErrorHelpers.createError(

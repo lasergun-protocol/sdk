@@ -1,18 +1,18 @@
-import type { 
-  IStorageAdapter, 
+import type {
+  IStorageAdapter,
   TransferResult,
   HexString,
-  EventCounts 
+  EventCounts
 } from '../types';
 import { HDSecretManager } from '../crypto';
 import { LaserGunConfigManager } from '../core/config';
 import { TokenManager } from './tokenOperations';
-import { 
-  ValidationUtils, 
-  HDHelpers, 
-  ErrorHelpers, 
+import {
+  ValidationUtils,
+  HDHelpers,
+  ErrorHelpers,
   StorageHelpers,
-  ContractHelpers 
+  ContractHelpers
 } from '../utils';
 
 /**
@@ -27,7 +27,7 @@ export class TransferOperations {
   private eventCounts: EventCounts | null = null;
 
   constructor(
-    configManager: LaserGunConfigManager, 
+    configManager: LaserGunConfigManager,
     storage: IStorageAdapter,
     tokenManager: TokenManager
   ) {
@@ -55,34 +55,41 @@ export class TransferOperations {
     encryptedSecret: string
   ): Promise<TransferResult> {
     ValidationUtils.validateInitialization(this.hdManager, this.eventCounts, 'TransferOperations');
-    
+
     try {
       // Validate all transfer parameters
       ValidationUtils.validateRecipientParams(recipientCommitment, encryptedSecret);
-      
+
       // Validate shield and get info
       const { commitment, shieldInfo, parsedAmount } = await ValidationUtils.validateAndGetShieldInfo(
         secret, amount, this.configManager, this.tokenManager
       );
-      
+
       // Execute transfer transaction
       const contract = this.configManager.getContract();
+      const { transferFeePercent, feeDenominator } = await ContractHelpers.getFeeInfo(contract);
       const tx = await contract.transfer(secret, parsedAmount, recipientCommitment, encryptedSecret);
       const receipt = await ContractHelpers.waitForTransaction(tx);
-      
+
+
+      const { netAmount, fee } = ContractHelpers.calculateNetAmount(
+        parsedAmount, transferFeePercent, feeDenominator
+      );
+
+
       // Save transfer transaction with sequential HD index
       await this.saveTransferTransaction(
-        receipt, shieldInfo.token, parsedAmount.toString(), 
+        receipt, shieldInfo.token, netAmount.toString(), fee.toString(),
         recipientCommitment, commitment
       );
-      
+
       return {
         success: true,
         txHash: receipt.hash,
         recipientCommitment,
         amount: parsedAmount.toString()
       };
-      
+
     } catch (error) {
       return {
         success: false,
@@ -98,14 +105,15 @@ export class TransferOperations {
     receipt: any,
     token: string,
     amount: string,
+    fee: string,
     recipientCommitment: HexString,
     sourceCommitment: HexString
   ): Promise<void> {
     const { chainId, wallet } = this.getStorageContext();
-    
+
     // Transfer gets sequential index across all operations
     const transferIndex = HDHelpers.getSequentialIndex(this.eventCounts!);
-    
+
     const transaction = HDHelpers.createHDTransaction(
       transferIndex,
       'transfer',
@@ -113,14 +121,15 @@ export class TransferOperations {
       receipt.blockNumber,
       token,
       amount,
+      fee,
       recipientCommitment,
       undefined, // No HD operation for transfers
       undefined, // No HD index for transfers
-      { 
+      {
         from: sourceCommitment // Source commitment (consumed shield)
       }
     );
-    
+
     await StorageHelpers.saveTransactionSafely(this.storage, chainId, wallet, transaction);
   }
 

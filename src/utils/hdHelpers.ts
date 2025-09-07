@@ -65,6 +65,7 @@ export class HDHelpers {
     blockNumber: number,
     token: string,
     amount: string,
+    fee: string,
     commitment?: string,
     operation?: HDOperation,
     index?: number,
@@ -78,6 +79,7 @@ export class HDHelpers {
       timestamp: Date.now(),
       token,
       amount,
+      fee,
       ...(commitment && { commitment }),
       ...(operation && index !== undefined && {
         derivationPath: `${operation}/${index}`,
