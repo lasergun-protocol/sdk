@@ -1,4 +1,4 @@
-import { parseUnits, ZeroHash } from 'ethers';
+import { ZeroHash } from 'ethers';
 import type {
   IStorageAdapter,
   ShieldResult,
@@ -57,7 +57,7 @@ export class ShieldOperations {
       // Validate inputs
       ValidationUtils.validateAddress(tokenAddress, 'token address');
 
-      const parsedAmount = parseUnits(amount, await this.tokenManager.getTokenDecimals(tokenAddress));
+      const parsedAmount = BigInt(amount);
       if (parsedAmount <= 0n) {
         throw ErrorHelpers.validationError('amount', amount, 'positive number');
       }
