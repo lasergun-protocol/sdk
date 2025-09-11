@@ -136,7 +136,7 @@ export class EventScanner {
         this.wallet,
         { privateKey: this.keys.privateKey as HexString },
         this.startBlock,
-        this.recoveryBlockScanned
+        (blockId: number) => this.recoveryBlockScanned(blockId)
       );
 
       console.log('📊 Final event counts:', eventCounts);
