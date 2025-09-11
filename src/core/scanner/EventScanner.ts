@@ -275,7 +275,7 @@ export class EventScanner {
             this.wallet,
             { privateKey: this.keys!.privateKey as HexString },
             this.transactionCallback,
-            this.recoveryBlockScanned
+            (blockId: number) => this.recoveryBlockScanned(blockId)
           );
 
           // Save progress
