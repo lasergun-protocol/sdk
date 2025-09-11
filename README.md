@@ -221,16 +221,7 @@ lasergun.onStateChange((state) => {
 ```
 
 ### Data Recovery
-
 ```typescript
-// Recover all data from blockchain
-const recovery = await lasergun.recoverFromBlockchain();
-console.log(`Recovered ${recovery.shieldsRecovered} shields`);
-console.log(`Recovered ${recovery.transactionsRecovered} transactions`);
-
-// Emergency recovery (full blockchain scan)
-const emergency = await lasergun.emergencyRecovery(startBlock);
-
 // Sync local data with blockchain
 const sync = await lasergun.syncWithBlockchain();
 console.log(`Added: ${sync.added}, Updated: ${sync.updated}, Removed: ${sync.removed}`);
@@ -359,11 +350,9 @@ const scannerConfig = {
 ### Recovery Methods
 
 | Method | Description | Returns |
-|--------|-------------|---------|
-| `recoverFromBlockchain()` | Restore all data from chain | `Promise<HDRecoveryResult>` |
+|--------|-------------|---------| 
 | `syncWithBlockchain()` | Sync local with blockchain | `Promise<SyncResult>` |
-| `validateDataIntegrity()` | Check data consistency | `Promise<ValidationResult>` |
-| `emergencyRecovery(fromBlock)` | Full blockchain recovery | `Promise<EmergencyResult>` |
+| `validateDataIntegrity()` | Check data consistency | `Promise<ValidationResult>` | 
 
 ### Utility Methods
 
