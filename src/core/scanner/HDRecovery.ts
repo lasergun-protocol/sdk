@@ -2,7 +2,8 @@ import type {
     IStorageAdapter, 
     Shield, 
     EventCounts, 
-    HexString 
+    HexString, 
+    ScannedBlockCallback
   } from '../../types';
   import { createEventCounts } from '../../types';
   import { CryptoService, HDSecretManager } from '../../crypto';
@@ -32,7 +33,8 @@ import type {
       hdManager: HDSecretManager,
       wallet: string,
       keys: { privateKey: HexString },
-      startBlock: number
+      startBlock: number,
+      blockScannedCallback?: ScannedBlockCallback
     ): Promise<{
       eventCounts: EventCounts;
       recoveredShields: Shield[];
@@ -57,7 +59,7 @@ import type {
         
         try {
           const allEvents = await this.getAndSortEvents(contract, blockStart, blockEnd);
-  
+          if (blockScannedCallback) blockScannedCallback(blockEnd);
           // Process events sequentially
           for (const event of allEvents) {
             try {

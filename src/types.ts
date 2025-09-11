@@ -226,7 +226,7 @@ export enum ErrorCode {
 export type TransactionCallback = (transaction: Transaction) => void;
 export type ErrorCallback = (error: LaserGunError) => void;
 export type StateChangeCallback = (state: ScannerState) => void;
-export type ScannedBlockCallback = (blockId: Number) => void;
+export type ScannedBlockCallback = (blockId: number) => void;
 export type HDRecoveryCallback = (result: HDRecoveryResult) => void;
 
 // Contract event types (matching smart contract events)

@@ -1,16 +1,16 @@
 import type { Provider } from 'ethers';
 import { Contract } from 'ethers';
-import type { 
-  IStorageAdapter, 
-  ScannerConfig, 
-  ScannerState, 
-  TransactionCallback, 
-  ErrorCallback, 
+import type {
+  IStorageAdapter,
+  ScannerConfig,
+  ScannerState,
+  TransactionCallback,
+  ErrorCallback,
   StateChangeCallback,
   ScannedBlockCallback,
   CryptoKeys,
   HexString,
-  EventCounts 
+  EventCounts
 } from '../../types';
 import { LaserGunError, ErrorCode } from '../../types';
 import { CryptoService, HDSecretManager } from '../../crypto';
@@ -48,7 +48,7 @@ export class EventScanner {
   private transactionCallback?: TransactionCallback;
   private errorCallback?: ErrorCallback;
   private stateChangeCallback?: StateChangeCallback;
-  private blockScannedCallback?: ScannedBlockCallback; 
+  private blockScannedCallback?: ScannedBlockCallback;
 
   // LaserGun contract ABI (only events we need)
   private static readonly CONTRACT_ABI = [
@@ -87,7 +87,7 @@ export class EventScanner {
       if (!wallet || typeof wallet !== 'string') {
         throw new LaserGunError('Invalid wallet address', ErrorCode.VALIDATION_ERROR);
       }
-      
+
       if (!keys || !keys.privateKey) {
         throw new LaserGunError('Invalid crypto keys', ErrorCode.VALIDATION_ERROR);
       }
@@ -99,15 +99,15 @@ export class EventScanner {
         this.wallet,
         this.chainId
       );
-      
+
       this.lastScannedBlock = await StorageHelpers.getLastScannedBlockSafely(
         this.storage, this.chainId, this.wallet
       );
-      
+
       this.eventCounts = await StorageHelpers.loadEventCountsSafely(
         this.storage, this.chainId, this.wallet
       );
-      
+
       this.emitStateChange();
     } catch (error) {
       throw ErrorHelpers.createError(
@@ -128,26 +128,27 @@ export class EventScanner {
 
     try {
       console.log('🔍 Starting sequential HD recovery...');
-      
+
       const { eventCounts, recoveredShields } = await this.hdRecovery.sequentialScan(
         this.contract,
         this.provider,
         this.hdManager,
         this.wallet,
         { privateKey: this.keys.privateKey as HexString },
-        this.startBlock
+        this.startBlock,
+        this.recoveryBlockScanned
       );
-      
+
       console.log('📊 Final event counts:', eventCounts);
       console.log(`✅ Recovered ${recoveredShields.length} shields`);
-      
+
       await StorageHelpers.saveEventCountsSafely(
         this.storage, this.chainId, this.wallet, eventCounts
       );
       this.eventCounts = eventCounts;
-      
+
       this.emitStateChange();
-      
+
     } catch (error) {
       throw ErrorHelpers.createError(
         error,
@@ -155,6 +156,11 @@ export class EventScanner {
         ErrorCode.SCANNER_ERROR
       );
     }
+  }
+
+  recoveryBlockScanned(blockId: number): void {
+    this.lastScannedBlock = blockId;
+    if (this.blockScannedCallback) this.blockScannedCallback(blockId)
   }
 
   /**
@@ -240,11 +246,11 @@ export class EventScanner {
       chainId: this.chainId,
       wallet: this.wallet
     };
-    
+
     if (this.eventCounts) {
       return { ...baseState, eventCounts: this.eventCounts };
     }
-    
+
     return baseState;
   }
 
@@ -257,34 +263,34 @@ export class EventScanner {
 
       while (this.isRunning) {
         const latestBlock = await this.provider.getBlockNumber();
-        
+
         if (fromBlock <= latestBlock) {
           const toBlock = Math.min(fromBlock + this.batchSize - 1, latestBlock);
           this.currentBlock = toBlock;
 
           await this.eventProcessor.scanBatch(
-            fromBlock, 
-            toBlock, 
+            fromBlock,
+            toBlock,
             this.contract,
             this.wallet,
             { privateKey: this.keys!.privateKey as HexString },
             this.transactionCallback,
             this.blockScannedCallback
           );
-          
+
           // Save progress
           await StorageHelpers.saveLastScannedBlockSafely(
             this.storage, this.chainId, this.wallet, toBlock
           );
           this.lastScannedBlock = toBlock;
-          
+
           fromBlock = toBlock + 1;
           this.emitStateChange();
         } else {
           // Wait for new blocks
           await new Promise(resolve => setTimeout(resolve, 5000));
         }
-        
+
         // Small delay to prevent rate limiting
         await new Promise(resolve => setTimeout(resolve, 100));
       }
@@ -307,7 +313,7 @@ export class EventScanner {
     const lastScanned = await StorageHelpers.getLastScannedBlockSafely(
       this.storage, this.chainId, this.wallet
     );
-    
+
     return lastScanned > 0 ? lastScanned + 1 : this.startBlock;
   }
 
