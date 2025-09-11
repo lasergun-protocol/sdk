@@ -7,6 +7,7 @@ import type {
   TransactionCallback, 
   ErrorCallback, 
   StateChangeCallback,
+  ScannedBlockCallback,
   CryptoKeys,
   HexString,
   EventCounts 
@@ -47,6 +48,7 @@ export class EventScanner {
   private transactionCallback?: TransactionCallback;
   private errorCallback?: ErrorCallback;
   private stateChangeCallback?: StateChangeCallback;
+  private blockScannedCallback?: ScannedBlockCallback; 
 
   // LaserGun contract ABI (only events we need)
   private static readonly CONTRACT_ABI = [
@@ -219,6 +221,10 @@ export class EventScanner {
     this.errorCallback = callback;
   }
 
+  onBlockScanned(callback: ScannedBlockCallback): void {
+    this.blockScannedCallback = callback;
+  }
+
   onStateChange(callback: StateChangeCallback): void {
     this.stateChangeCallback = callback;
   }
@@ -262,7 +268,8 @@ export class EventScanner {
             this.contract,
             this.wallet,
             { privateKey: this.keys!.privateKey as HexString },
-            this.transactionCallback
+            this.transactionCallback,
+            this.blockScannedCallback
           );
           
           // Save progress

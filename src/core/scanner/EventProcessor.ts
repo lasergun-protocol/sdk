@@ -1,4 +1,4 @@
-import type { IStorageAdapter,  Transaction, HexString } from '../../types';
+import type { IStorageAdapter,  Transaction, HexString, ScannedBlockCallback, TransactionCallback } from '../../types';
 import { CryptoService } from '../../crypto';
 import { HDHelpers, ErrorHelpers, StorageHelpers } from '../../utils';
 
@@ -116,7 +116,8 @@ export class EventProcessor {
     contract: any,
     wallet: string,
     keys: { privateKey: HexString },
-    transactionCallback?: (tx: Transaction) => void
+    transactionCallback?: TransactionCallback,
+    blockScannedCallback?: ScannedBlockCallback
   ): Promise<void> {
     try {
       // For ongoing scanning, we primarily monitor SecretDelivered events
@@ -131,7 +132,7 @@ export class EventProcessor {
           event, wallet, keys, contract, transactionCallback
         );
       }
-
+      if (!!blockScannedCallback) blockScannedCallback(toBlock);
     } catch (error) {
       throw ErrorHelpers.createError(
         error,
