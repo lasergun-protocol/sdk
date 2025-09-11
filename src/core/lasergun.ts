@@ -157,13 +157,7 @@ export default class LaserGun {
     this.ensureInitialized();
     return await this.recoveryManager.recoverFromBlockchain();
   }
-
-  async emergencyRecovery(fromBlock: number = 0): Promise<{
-    shieldsRecovered: number; transactionsRecovered: number; errors: string[];
-  }> {
-    this.ensureInitialized();
-    return await this.recoveryManager.emergencyRecovery(fromBlock);
-  }
+ 
 
   async validateDataIntegrity(): Promise<{
     isValid: boolean; issues: string[]; suggestions: string[];

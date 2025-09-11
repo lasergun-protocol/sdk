@@ -1,4 +1,4 @@
-import type { IStorageAdapter,  EventCounts } from '../types';
+import type { IStorageAdapter, EventCounts } from '../types';
 import { LaserGunError, ErrorCode } from '../types';
 import { LaserGunConfigManager } from './config';
 import { EventScanner } from './scanner';
@@ -6,6 +6,7 @@ import { EventScanner } from './scanner';
 /**
  * Recovery and synchronization manager
  * Handles blockchain recovery, data integrity validation, and synchronization
+ * Uses single EventScanner instance - no duplicate creation
  */
 export class RecoveryManager {
   private readonly configManager: LaserGunConfigManager;
@@ -15,15 +16,15 @@ export class RecoveryManager {
   constructor(
     configManager: LaserGunConfigManager,
     storage: IStorageAdapter,
-    scanner: EventScanner
+    scanner: EventScanner // Injected dependency - single instance
   ) {
     this.configManager = configManager;
     this.storage = storage;
-    this.scanner = scanner;
+    this.scanner = scanner; // Reuse existing scanner
   }
 
   /**
-   * Recover all data from blockchain using HD scanner
+   * Recover all data from blockchain using existing scanner
    */
   async recoverFromBlockchain(): Promise<{
     shieldsRecovered: number;
@@ -32,7 +33,7 @@ export class RecoveryManager {
     try {
       await this.configManager.checkNetworkConnection();
       
-      // Use scanner's HD recovery mechanism
+      // Use existing scanner's HD recovery mechanism
       await this.scanner.recoverFromBlockchain();
       
       // Get counts for reporting
@@ -60,76 +61,18 @@ export class RecoveryManager {
   }
 
   /**
-   * Emergency recovery with validation
+   * Clean up all data for specific chain and wallet
    */
-  async emergencyRecovery(fromBlock: number = 0): Promise<{
-    shieldsRecovered: number;
-    transactionsRecovered: number;
-    errors: string[];
-  }> {
+  async cleanupData(): Promise<void> {
     try {
-      // Validate fromBlock
-      if (!Number.isInteger(fromBlock) || fromBlock < 0) {
-        throw new LaserGunError('fromBlock must be a non-negative integer', ErrorCode.VALIDATION_ERROR);
-      }
-
-      const currentBlock = await this.configManager.getConfig().provider.getBlockNumber();
-      if (fromBlock > currentBlock) {
-        throw new LaserGunError(
-          `fromBlock (${fromBlock}) cannot be greater than current block (${currentBlock})`,
-          ErrorCode.VALIDATION_ERROR
-        );
-      }
-
-      // Clear existing data
       await this.storage.deleteWalletData(
         this.configManager.getConfig().chainId, 
         this.configManager.getWallet()
       );
-      
-      // Re-initialize scanner with custom start block
-      const scannerConfig = { 
-        startBlock: fromBlock, 
-        enableHDRecovery: true,
-        batchSize: 100 // Smaller batches for emergency recovery
-      };
-      
-      const emergencyScanner = new EventScanner(
-        this.configManager.getConfig().contractAddress,
-        this.configManager.getConfig().provider,
-        this.storage,
-        this.configManager.getConfig().chainId,
-        scannerConfig
-      );
-      
-      const keys = this.configManager.getKeys();
-      if (!keys) {
-        throw new LaserGunError('Keys not available for emergency recovery', ErrorCode.INVALID_CONFIG);
-      }
-      
-      await emergencyScanner.initialize(this.configManager.getWallet(), keys);
-      await emergencyScanner.recoverFromBlockchain();
-      
-      // Reload data
-      const shields = await this.storage.loadShields(
-        this.configManager.getConfig().chainId, 
-        this.configManager.getWallet()
-      );
-      const transactions = await this.storage.loadTransactions(
-        this.configManager.getConfig().chainId, 
-        this.configManager.getWallet()
-      );
-      
-      return {
-        shieldsRecovered: shields.length,
-        transactionsRecovered: transactions.length,
-        errors: []
-      };
-      
     } catch (error) {
       throw new LaserGunError(
-        `Failed emergency recovery: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        ErrorCode.SCANNER_ERROR,
+        `Failed to cleanup data: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        ErrorCode.STORAGE_ERROR,
         error
       );
     }
@@ -204,7 +147,7 @@ export class RecoveryManager {
       
       if (duplicateNonces > 0) {
         issues.push(`${duplicateNonces} duplicate transaction nonces found`);
-        suggestions.push('Run emergencyRecovery() to rebuild transaction history');
+        suggestions.push('Run cleanupData() + recoverFromBlockchain() to rebuild transaction history');
       }
       
       return {
@@ -217,13 +160,13 @@ export class RecoveryManager {
       return {
         isValid: false,
         issues: [`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`],
-        suggestions: ['Try emergency recovery or re-initialization']
+        suggestions: ['Try cleanupData() + recoverFromBlockchain() or re-initialization']
       };
     }
   }
 
   /**
-   * Sync local storage with blockchain
+   * Sync local storage with blockchain using existing scanner
    */
   async syncWithBlockchain(): Promise<{
     added: number;
@@ -276,7 +219,7 @@ export class RecoveryManager {
         }
       }
       
-      // Run recovery to find any missing shields
+      // Run recovery to find any missing shields using existing scanner
       const recovery = await this.recoverFromBlockchain();
       added = recovery.shieldsRecovered - (shields.length - removed);
       

@@ -84,12 +84,7 @@ export const recovery = {
     return lasergun;
   },
   
-  /**
-   * Perform emergency recovery for existing LaserGun instance
-   */
-  emergencyRecover: async (lasergun: LaserGun, fromBlock: number = 0) => {
-    return await lasergun.emergencyRecovery(fromBlock);
-  },
+ 
   
   /**
    * Validate data integrity for LaserGun instance

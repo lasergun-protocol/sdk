@@ -48,8 +48,7 @@ export class EventScanner {
   private transactionCallback?: TransactionCallback;
   private errorCallback?: ErrorCallback;
   private stateChangeCallback?: StateChangeCallback;
-  private blockScannedCallback?: ScannedBlockCallback;
-  private recoveryBlockScannedCallback?: ScannedBlockCallback|undefined;
+  private blockScannedCallback?: ScannedBlockCallback; 
 
   // LaserGun contract ABI (only events we need)
   private static readonly CONTRACT_ABI = [
@@ -65,8 +64,7 @@ export class EventScanner {
     provider: Provider,
     storage: IStorageAdapter,
     chainId: number,
-    config: ScannerConfig = {},
-    recoveryBlockScanned?: ScannedBlockCallback
+    config: ScannerConfig = {}
   ) {
     this.contract = new Contract(contractAddress, EventScanner.CONTRACT_ABI, provider);
     this.provider = provider;
@@ -74,8 +72,7 @@ export class EventScanner {
     this.chainId = chainId;
     this.batchSize = config.batchSize || 1000;
     this.startBlock = config.startBlock || 0;
-    this.enableHDRecovery = config.enableHDRecovery ?? true;
-    this.recoveryBlockScannedCallback = recoveryBlockScanned;
+    this.enableHDRecovery = config.enableHDRecovery ?? true; 
 
     // Initialize sub-modules
     this.hdRecovery = new HDRecovery(storage, chainId, this.batchSize);
@@ -139,7 +136,7 @@ export class EventScanner {
         this.wallet,
         { privateKey: this.keys.privateKey as HexString },
         this.startBlock,
-        this.recoveryBlockScannedCallback
+        this.recoveryBlockScanned
       );
 
       console.log('📊 Final event counts:', eventCounts);
@@ -278,7 +275,7 @@ export class EventScanner {
             this.wallet,
             { privateKey: this.keys!.privateKey as HexString },
             this.transactionCallback,
-            this.blockScannedCallback
+            this.recoveryBlockScanned
           );
 
           // Save progress
