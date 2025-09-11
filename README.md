@@ -394,6 +394,10 @@ lasergun.onStateChange((state: ScannerState) => {
   console.log(`Scanner: ${state.isRunning ? 'running' : 'stopped'}`);
   console.log(`Current block: ${state.currentBlock}`);
 });
+// 
+lasergun.onBlockScanned((blockId: Number) => {
+  console.log(`Last block scanned: ${blockId}`);
+});
 ```
 
 ## 🧪 Testing
