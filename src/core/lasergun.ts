@@ -15,6 +15,7 @@ import type {
   CryptoKeys,
   HexString,
   EventCounts,
+  ScannedBlockCallback,
 } from '../types';
 import { CryptoService, HDSecretManager } from '../crypto';
 import { EventScanner } from './scanner';
@@ -37,6 +38,7 @@ export default class LaserGun {
   private readonly transferOperations: TransferOperations;
   private readonly recoveryManager: RecoveryManager;
   private readonly scanner: EventScanner;
+ 
   
   private keys: CryptoKeys | null = null;
   private hdManager: HDSecretManager | null = null;
@@ -51,8 +53,7 @@ export default class LaserGun {
     this.transferOperations = new TransferOperations(this.configManager, storage, this.tokenManager);
     
     this.scanner = new EventScanner(
-      config.contractAddress, config.provider, storage, config.chainId, scannerConfig
-    );
+      config.contractAddress, config.provider, storage, config.chainId, scannerConfig);
     this.recoveryManager = new RecoveryManager(this.configManager, storage, this.scanner);
   }
 
@@ -208,6 +209,10 @@ export default class LaserGun {
 
   onError(callback: ErrorCallback): void {
     this.scanner.onError(callback);
+  }
+
+  onBlockScanned(callback: ScannedBlockCallback): void {
+    this.scanner.onBlockScanned(callback);
   }
 
   onStateChange(callback: StateChangeCallback): void {
