@@ -114,7 +114,7 @@ export class HDRecovery {
                 );
                 if (unshieldResult.isOurs) {
                   // Создаем unshield транзакцию с правильным sequential nonce
-                  const unshieldTx = this.createUnshieldTransaction(event, currentEventCounts, unshieldResult.sourceShield);
+                  const unshieldTx = this.createUnshieldTransaction(event, currentEventCounts);
                   pendingTransactions.push(unshieldTx);
                   
                   // Unshield не обновляет HD counts - это non-HD операция
@@ -220,7 +220,7 @@ export class HDRecovery {
   /**
    * ИСПРАВЛЕНО: Создание транзакции unshield с правильным sequential nonce
    */
-  private createUnshieldTransaction(event: any, currentEventCounts: EventCounts, sourceShield?: Shield): Transaction {
+  private createUnshieldTransaction(event: any, currentEventCounts: EventCounts): Transaction {
     const sequentialNonce = HDHelpers.getSequentialIndex(currentEventCounts);
     return HDHelpers.createHDTransaction(
       sequentialNonce,
