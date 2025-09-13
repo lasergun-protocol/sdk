@@ -224,12 +224,34 @@ export default class LaserGun {
     );
   }
 
+  
+
   async getUserShields(): Promise<Shield[]> {
     this.ensureInitialized();
     return await StorageHelpers.loadShieldsSafely(
       this.storage, this.configManager.getConfig().chainId, this.wallet
     );
   }
+
+  /**
+ * Get shields for specific token address
+ */
+async getTokenShields(tokenAddress: string): Promise<Shield[]> {
+  this.ensureInitialized();
+  
+  // Validate token address
+  if (!CryptoService.isValidAddress(tokenAddress)) {
+    throw ErrorHelpers.validationError('tokenAddress', tokenAddress, 'valid Ethereum address');
+  }
+  
+  // Get all shields and filter by token (reuse existing method)
+  const allShields = await this.getUserShields();
+  
+  // Filter shields by token address (case insensitive)
+  return allShields.filter(shield => 
+    shield.token.toLowerCase() === tokenAddress.toLowerCase()
+  );
+}
 
   async getEventCounts(): Promise<EventCounts> {
     this.ensureInitialized();
