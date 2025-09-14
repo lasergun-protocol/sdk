@@ -100,11 +100,11 @@ export class EventScanner {
         this.chainId
       );
 
-      this.lastScannedBlock = await StorageHelpers.getLastScannedBlockSafely(
+      this.lastScannedBlock = await StorageHelpers.getLastScannedBlock(
         this.storage, this.chainId, this.wallet
       );
 
-      this.eventCounts = await StorageHelpers.loadEventCountsSafely(
+      this.eventCounts = await StorageHelpers.loadEventCounts(
         this.storage, this.chainId, this.wallet
       );
 
@@ -142,7 +142,7 @@ export class EventScanner {
       console.log('📊 Final event counts:', eventCounts);
       console.log(`✅ Recovered ${recoveredShields.length} shields`);
 
-      await StorageHelpers.saveEventCountsSafely(
+      await StorageHelpers.saveEventCounts(
         this.storage, this.chainId, this.wallet, eventCounts
       );
       this.eventCounts = eventCounts;
@@ -279,7 +279,7 @@ export class EventScanner {
           );
 
           // Save progress
-          await StorageHelpers.saveLastScannedBlockSafely(
+          await StorageHelpers.saveLastScannedBlock(
             this.storage, this.chainId, this.wallet, toBlock
           );
           this.lastScannedBlock = toBlock;
@@ -310,7 +310,7 @@ export class EventScanner {
    * Get starting block for scanning
    */
   private async getStartingBlock(): Promise<number> {
-    const lastScanned = await StorageHelpers.getLastScannedBlockSafely(
+    const lastScanned = await StorageHelpers.getLastScannedBlock(
       this.storage, this.chainId, this.wallet
     );
 

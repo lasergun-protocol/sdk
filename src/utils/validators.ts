@@ -1,9 +1,6 @@
-import { parseUnits } from 'ethers';
 import type { HexString } from '../types';
 import { LaserGunError, ErrorCode } from '../types';
 import { CryptoService } from '../crypto';
-import { LaserGunConfigManager } from '../core/config';
-import { TokenManager } from '../operations/tokenOperations';
 
 /**
  * Common validation utilities for LaserGun operations
@@ -16,14 +13,14 @@ export class ValidationUtils {
    */
   static validateShieldParams(
     secret: HexString, 
-    amount: string, 
+    amount: bigint, 
     tokenAddress?: string
   ): void {
     if (!CryptoService.isValidHexString(secret)) {
       throw new LaserGunError('Invalid secret format', ErrorCode.VALIDATION_ERROR);
     }
     
-    if (!amount || parseFloat(amount) <= 0) {
+    if (!amount || amount <= 0n ) {
       throw new LaserGunError('Amount must be positive', ErrorCode.INVALID_AMOUNT);
     }
     
@@ -52,41 +49,25 @@ export class ValidationUtils {
    * Validate and get shield info with parsed amount
    * Common pattern used in shield and transfer operations
    */
-  static async validateAndGetShieldInfo(
+  static async validateShield( 
+    shieldInfo: any,
     secret: HexString,
-    amount: string,
-    configManager: LaserGunConfigManager,
-    tokenManager: TokenManager
-  ): Promise<{
-    commitment: HexString;
-    shieldInfo: any;
-    tokenDecimals: number;
-    parsedAmount: bigint;
-  }> {
+    amount: bigint 
+  ): Promise<void> {
     ValidationUtils.validateShieldParams(secret, amount);
-    
-    const wallet = configManager.getWallet();
-    const contract = configManager.getContract();
-    
-    const commitment = CryptoService.generateCommitment(secret, wallet);
-    const shieldInfo = await contract.getShieldInfo(commitment);
+     
     
     if (!shieldInfo.exists || shieldInfo.spent) {
       throw new LaserGunError('Shield does not exist or already spent', ErrorCode.SHIELD_NOT_FOUND);
-    }
+    } 
     
-    const tokenDecimals = await tokenManager.getTokenDecimals(shieldInfo.token);
-    const parsedAmount = parseUnits(amount, tokenDecimals);
-    
-    if (parsedAmount <= 0n) {
+    if (amount <= 0n) {
       throw new LaserGunError('Amount must be positive', ErrorCode.INVALID_AMOUNT);
     }
     
-    if (shieldInfo.amount < parsedAmount) {
+    if (shieldInfo.amount < amount) {
       throw new LaserGunError('Insufficient shield balance', ErrorCode.INSUFFICIENT_BALANCE);
-    }
-    
-    return { commitment, shieldInfo, tokenDecimals, parsedAmount };
+    } 
   }
 
   /**

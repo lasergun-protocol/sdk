@@ -1,13 +1,15 @@
 import { ZeroHash } from 'ethers';
-import type {
-  IStorageAdapter,
-  ShieldResult,
-  UnshieldResult,
-  TransferResult,
-  HexString,
-  EventCounts
+import {
+  type IStorageAdapter,
+  type ShieldResult,
+  type UnshieldResult,
+  type TransferResult,
+  type HexString,
+  type EventCounts,
+  ErrorCode,
+  LaserGunError
 } from '../types';
-import { HDSecretManager } from '../crypto';
+import { CryptoService, HDSecretManager } from '../crypto';
 import { LaserGunConfigManager } from '../core/config';
 import { TokenManager } from './tokenOperations';
 import {
@@ -50,7 +52,7 @@ export class ShieldOperations {
   /**
    * Shield (privatize) ERC20 tokens with HD derivation
    */
-  async shield(amount: string, tokenAddress: string): Promise<ShieldResult> {
+  async shield(amount: bigint, tokenAddress: string): Promise<ShieldResult> {
     ValidationUtils.validateInitialization(this.hdManager, this.eventCounts, 'ShieldOperations');
 
     try {
@@ -86,16 +88,16 @@ export class ShieldOperations {
 
       // Save shield and update counts
       await this.saveShieldAndTransaction(
-        secret, commitment, tokenAddress, netAmount.toString(),
-        'shield', shieldIndex, receipt, fee.toString()
+        secret, commitment, tokenAddress, netAmount,
+        'shield', shieldIndex, receipt, fee
       );
 
       return {
         success: true,
         txHash: receipt.hash,
         commitment,
-        netAmount: netAmount.toString(),
-        fee: fee.toString(),
+        netAmount: netAmount,
+        fee: fee,
         derivationPath: `shield/${shieldIndex}`,
         hdIndex: shieldIndex
       };
@@ -113,21 +115,26 @@ export class ShieldOperations {
    */
   async unshield(
     secret: HexString,
-    amount: string,
+    amount: bigint,
     recipient: string
   ): Promise<UnshieldResult> {
     ValidationUtils.validateInitialization(this.hdManager, this.eventCounts, 'ShieldOperations');
 
     try {
       ValidationUtils.validateAddress(recipient, 'recipient address');
-
-      // Validate shield and get info
-      const { commitment, shieldInfo, parsedAmount } = await ValidationUtils.validateAndGetShieldInfo(
-        secret, amount, this.configManager, this.tokenManager
+      
+      const { commitment, shieldInfo } = await ShieldOperations.getShieldInfo(
+        secret, this.configManager
       );
 
+      // Validate shield and get info
+      await ValidationUtils.validateShield(
+        shieldInfo, secret, amount
+      ); 
+
+
       // Handle remainder if needed
-      const remainderAmount = shieldInfo.amount - parsedAmount;
+      const remainderAmount = shieldInfo.amount - amount;
       let newCommitment = ZeroHash;
       let remainderData: { index: number; path: string } | undefined;
 
@@ -143,31 +150,31 @@ export class ShieldOperations {
 
       // Execute unshield transaction
       const contract = this.configManager.getContract();
-      const tx = await contract.unshield(secret, parsedAmount, recipient, newCommitment);
+      const tx = await contract.unshield(secret, amount, recipient, newCommitment);
       const receipt = await ContractHelpers.waitForTransaction(tx);
 
       // Calculate fees
       const { unshieldFeePercent, feeDenominator } = await ContractHelpers.getFeeInfo(contract);
       const { netAmount, fee } = ContractHelpers.calculateNetAmount(
-        parsedAmount, unshieldFeePercent, feeDenominator
+        amount, unshieldFeePercent, feeDenominator
       );
 
       // Save remainder shield if created
       if (remainderAmount > 0n && remainderData) {
         await this.saveRemainderShield(
           remainderData.index, newCommitment as HexString, shieldInfo.token,
-          remainderAmount.toString(), receipt
+          remainderAmount, receipt
         );
       }
 
       // Save main unshield transaction
-      await this.saveUnshieldTransaction(receipt, shieldInfo.token, netAmount.toString(), fee.toString(), recipient, commitment);
+      await this.saveUnshieldTransaction(receipt, shieldInfo.token, netAmount, fee, recipient, commitment);
 
       return {
         success: true,
         txHash: receipt.hash,
-        amount: netAmount.toString(),
-        fee: fee.toString(),
+        amount: netAmount,
+        fee: fee,
         ...(remainderData && { remainderDerivationPath: remainderData.path })
       };
 
@@ -206,7 +213,7 @@ export class ShieldOperations {
 
       // Save consolidated shield and transaction
       await this.saveShieldAndTransaction(
-        newSecret, newCommitment, tokenAddress, totalAmount.toString(),
+        newSecret, newCommitment, tokenAddress, totalAmount,
         'consolidate', consolidateIndex, receipt
       );
 
@@ -214,7 +221,7 @@ export class ShieldOperations {
         success: true,
         txHash: receipt.hash,
         recipientCommitment: newCommitment,
-        amount: totalAmount.toString(),
+        amount: totalAmount,
         derivationPath: `consolidate/${consolidateIndex}`
       };
 
@@ -233,11 +240,11 @@ export class ShieldOperations {
     secret: HexString,
     commitment: HexString,
     token: string,
-    amount: string,
+    amount: bigint,
     operation: 'shield' | 'consolidate',
     index: number,
     receipt: any,
-    fee?: string
+    fee?: bigint
   ): Promise<void> {
     const { chainId, wallet } = this.getStorageContext();
 
@@ -245,13 +252,13 @@ export class ShieldOperations {
     const shield = HDHelpers.createHDShield(
       secret, commitment, token, amount, operation, index, receipt.hash, receipt.blockNumber
     );
-    await StorageHelpers.saveShieldSafely(this.storage, chainId, wallet, shield);
+    await StorageHelpers.saveShield(this.storage, chainId, wallet, shield);
 
     // Update event counts
     const updatedCounts = HDHelpers.updateEventCounts(
       this.eventCounts!, operation, 1, receipt.blockNumber
     );
-    await StorageHelpers.saveEventCountsSafely(this.storage, chainId, wallet, updatedCounts);
+    await StorageHelpers.saveEventCounts(this.storage, chainId, wallet, updatedCounts);
     this.eventCounts = updatedCounts;
 
     // Save transaction
@@ -259,7 +266,7 @@ export class ShieldOperations {
       index, operation, receipt.hash, receipt.blockNumber, token, amount, fee!,
       commitment, operation, index, { ...(fee && { fee }) }
     );
-    await StorageHelpers.saveTransactionSafely(this.storage, chainId, wallet, transaction);
+    await StorageHelpers.saveTransaction(this.storage, chainId, wallet, transaction);
   }
 
   /**
@@ -269,7 +276,7 @@ export class ShieldOperations {
     remainderIndex: number,
     commitment: HexString,
     token: string,
-    amount: string,
+    amount: bigint,
     receipt: any
   ): Promise<void> {
     const { chainId, wallet } = this.getStorageContext();
@@ -279,21 +286,21 @@ export class ShieldOperations {
       remainderSecret, commitment, token, amount, 'remainder', remainderIndex, receipt.hash, receipt.blockNumber
     );
 
-    await StorageHelpers.saveShieldSafely(this.storage, chainId, wallet, remainderShield);
+    await StorageHelpers.saveShield(this.storage, chainId, wallet, remainderShield);
 
     // Update event counts
     const updatedCounts = HDHelpers.updateEventCounts(
       this.eventCounts!, 'remainder', 1, receipt.blockNumber
     );
-    await StorageHelpers.saveEventCountsSafely(this.storage, chainId, wallet, updatedCounts);
+    await StorageHelpers.saveEventCounts(this.storage, chainId, wallet, updatedCounts);
     this.eventCounts = updatedCounts;
 
     // Save remainder transaction
     const transaction = HDHelpers.createHDTransaction(
-      remainderIndex, 'remainder', receipt.hash, receipt.blockNumber, token, amount, '0',
+      remainderIndex, 'remainder', receipt.hash, receipt.blockNumber, token, amount, 0n,
       commitment, 'remainder', remainderIndex
     );
-    await StorageHelpers.saveTransactionSafely(this.storage, chainId, wallet, transaction);
+    await StorageHelpers.saveTransaction(this.storage, chainId, wallet, transaction);
   }
 
   /**
@@ -302,8 +309,8 @@ export class ShieldOperations {
   private async saveUnshieldTransaction(
     receipt: any,
     token: string,
-    amount: string,
-    fee: string,
+    amount: bigint,
+    fee: bigint,
     recipient: string,
     sourceCommitment: HexString
   ): Promise<void> {
@@ -315,7 +322,7 @@ export class ShieldOperations {
       sourceCommitment, undefined, undefined, { to: recipient, fee }
     );
 
-    await StorageHelpers.saveTransactionSafely(this.storage, chainId, wallet, transaction);
+    await StorageHelpers.saveTransaction(this.storage, chainId, wallet, transaction);
   }
 
   /**
@@ -326,7 +333,7 @@ export class ShieldOperations {
     let totalAmount = 0n;
 
     for (const secret of secrets) {
-      const balance = await ContractHelpers.getShieldBalanceSafely(contract, secret, tokenAddress);
+      const balance = await ContractHelpers.getShieldBalance(contract, secret, tokenAddress);
       if (balance === 0n) {
         throw ErrorHelpers.shieldNotFoundError();
       }
@@ -334,7 +341,7 @@ export class ShieldOperations {
     }
 
     if (totalAmount === 0n) {
-      throw ErrorHelpers.validationError('total amount', '0', 'positive');
+      throw ErrorHelpers.validationError('total amount', 0n, 'positive');
     }
 
     return totalAmount;
@@ -345,5 +352,31 @@ export class ShieldOperations {
       chainId: this.configManager.getConfig().chainId,
       wallet: this.configManager.getWallet()
     };
+  }
+
+
+  /**
+   * Validate and get shield info with parsed amount
+   * Common pattern used in shield and transfer operations
+   */
+  static async getShieldInfo(
+    secret: HexString,
+    configManager: LaserGunConfigManager
+  ): Promise<{
+    commitment: HexString;
+    shieldInfo: any;
+  }> {
+
+    const wallet = configManager.getWallet();
+    const contract = configManager.getContract();
+
+    const commitment = CryptoService.generateCommitment(secret, wallet);
+    const shieldInfo = await contract.getShieldInfo(commitment);
+
+    if (!shieldInfo.exists || shieldInfo.spent) {
+      throw new LaserGunError('Shield does not exist or already spent', ErrorCode.SHIELD_NOT_FOUND);
+    }
+
+    return { commitment, shieldInfo };
   }
 }

@@ -79,11 +79,11 @@ export interface Transaction extends PartialHDMetadata {
   readonly blockNumber: number;
   readonly timestamp: number;
   readonly token: string;
-  readonly amount: string; // BigInt as string
+  readonly amount: bigint; 
   readonly commitment?: string;
   readonly from?: string; // 
   readonly to?: string;
-  readonly fee?: string;
+  readonly fee?: bigint;
 }
 
 // Add 'consolidate' and 'remainder' to TransactionType if not present
@@ -118,8 +118,8 @@ export interface TokenBalance {
   readonly token: string;
   readonly symbol: string;
   readonly decimals: number;
-  readonly publicBalance: string; // BigInt as string
-  readonly privateBalance: string; // BigInt as string
+  readonly publicBalance: bigint; 
+  readonly privateBalance: bigint; 
 }
 
 // Shield types with HD derivation support
@@ -127,7 +127,7 @@ export interface Shield extends PartialHDMetadata {
   readonly secret: string; // hex string
   readonly commitment: string; // hex string
   readonly token: string;
-  readonly amount: string; // BigInt as string
+  readonly amount: bigint;  
   readonly timestamp: number;
   readonly txHash?: string; // Transaction hash for correlation
   readonly blockNumber?: number; // Block number when created
@@ -166,14 +166,14 @@ export interface OperationResult {
 
 export interface ShieldResult extends OperationResult {
   readonly commitment?: string;
-  readonly netAmount?: string;
-  readonly fee?: string;
+  readonly netAmount?: bigint;
+  readonly fee?: bigint;
   readonly hdIndex?: number;
 }
 
 export interface UnshieldResult extends OperationResult {
-  readonly amount?: string;
-  readonly fee?: string;
+  readonly amount?: bigint;
+  readonly fee?: bigint;
   readonly remainderCommitment?: string;
   readonly remainderDerivationPath?: string; // HD path for remainder shield
 }
@@ -182,7 +182,7 @@ export interface TransferResult extends OperationResult {
   readonly recipientCommitment?: string;
   readonly remainderCommitment?: string;
   readonly remainderDerivationPath?: string; // HD path for remainder
-  readonly amount?: string;
+  readonly amount?: bigint;
 }
 
 // HD Recovery result type
@@ -233,8 +233,8 @@ export type HDRecoveryCallback = (result: HDRecoveryResult) => void;
 export interface ShieldedEvent {
   readonly commitment: string;
   readonly token: string;
-  readonly amount: string;
-  readonly fee: string;
+  readonly amount: bigint;
+  readonly fee: bigint;
   readonly blockNumber: number;
   readonly txHash: string;
   readonly timestamp?: number;
@@ -243,8 +243,8 @@ export interface ShieldedEvent {
 export interface UnshieldedEvent {
   readonly commitment: string;
   readonly token: string;
-  readonly amount: string;
-  readonly fee: string;
+  readonly amount: bigint;
+  readonly fee: bigint;
   readonly blockNumber: number;
   readonly txHash: string;
   readonly timestamp?: number;

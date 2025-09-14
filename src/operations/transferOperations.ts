@@ -5,8 +5,7 @@ import type {
   EventCounts
 } from '../types';
 import { HDSecretManager } from '../crypto';
-import { LaserGunConfigManager } from '../core/config';
-import { TokenManager } from './tokenOperations';
+import { LaserGunConfigManager } from '../core/config'; 
 import {
   ValidationUtils,
   HDHelpers,
@@ -14,6 +13,7 @@ import {
   StorageHelpers,
   ContractHelpers
 } from '../utils';
+import { ShieldOperations } from './shieldOperations';
 
 /**
  * Transfer-related operations module (REFACTORED)
@@ -21,19 +21,16 @@ import {
  */
 export class TransferOperations {
   private readonly configManager: LaserGunConfigManager;
-  private readonly storage: IStorageAdapter;
-  private readonly tokenManager: TokenManager;
+  private readonly storage: IStorageAdapter; 
   private hdManager: HDSecretManager | null = null;
   private eventCounts: EventCounts | null = null;
 
   constructor(
     configManager: LaserGunConfigManager,
-    storage: IStorageAdapter,
-    tokenManager: TokenManager
+    storage: IStorageAdapter 
   ) {
     this.configManager = configManager;
-    this.storage = storage;
-    this.tokenManager = tokenManager;
+    this.storage = storage; 
   }
 
   setHDManager(hdManager: HDSecretManager): void {
@@ -50,7 +47,7 @@ export class TransferOperations {
    */
   async transfer(
     secret: HexString,
-    amount: string,
+    amount: bigint,
     recipientCommitment: HexString,
     encryptedSecret: string
   ): Promise<TransferResult> {
@@ -60,26 +57,31 @@ export class TransferOperations {
       // Validate all transfer parameters
       ValidationUtils.validateRecipientParams(recipientCommitment, encryptedSecret);
 
-      // Validate shield and get info
-      const { commitment, shieldInfo, parsedAmount } = await ValidationUtils.validateAndGetShieldInfo(
-        secret, amount, this.configManager, this.tokenManager
+      const { commitment, shieldInfo } = await ShieldOperations.getShieldInfo(
+        secret, this.configManager
       );
+
+      // Validate shield and get info
+      await ValidationUtils.validateShield(
+        shieldInfo, secret, amount
+      ); 
+
 
       // Execute transfer transaction
       const contract = this.configManager.getContract();
       const { transferFeePercent, feeDenominator } = await ContractHelpers.getFeeInfo(contract);
-      const tx = await contract.transfer(secret, parsedAmount, recipientCommitment, encryptedSecret);
+      const tx = await contract.transfer(secret, amount, recipientCommitment, encryptedSecret);
       const receipt = await ContractHelpers.waitForTransaction(tx);
 
 
       const { netAmount, fee } = ContractHelpers.calculateNetAmount(
-        parsedAmount, transferFeePercent, feeDenominator
+        amount, transferFeePercent, feeDenominator
       );
 
 
       // Save transfer transaction with sequential HD index
       await this.saveTransferTransaction(
-        receipt, shieldInfo.token, netAmount.toString(), fee.toString(),
+        receipt, shieldInfo.token, netAmount, fee,
         recipientCommitment, commitment
       );
 
@@ -87,7 +89,7 @@ export class TransferOperations {
         success: true,
         txHash: receipt.hash,
         recipientCommitment,
-        amount: parsedAmount.toString()
+        amount
       };
 
     } catch (error) {
@@ -104,8 +106,8 @@ export class TransferOperations {
   private async saveTransferTransaction(
     receipt: any,
     token: string,
-    amount: string,
-    fee: string,
+    amount: bigint,
+    fee: bigint,
     recipientCommitment: HexString,
     sourceCommitment: HexString
   ): Promise<void> {
@@ -130,7 +132,7 @@ export class TransferOperations {
       }
     );
 
-    await StorageHelpers.saveTransactionSafely(this.storage, chainId, wallet, transaction);
+    await StorageHelpers.saveTransaction(this.storage, chainId, wallet, transaction);
   }
 
   private getStorageContext(): { chainId: number; wallet: string } {

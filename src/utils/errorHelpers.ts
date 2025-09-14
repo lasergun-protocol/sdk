@@ -170,7 +170,7 @@ export class ErrorHelpers {
   }
 
   /**
-   * Extract error message safely
+   * Extract error message 
    */
   static getErrorMessage(error: unknown): string {
     if (error instanceof LaserGunError) {

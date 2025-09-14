@@ -176,7 +176,7 @@ export class HDRecovery {
     });
 
     // Сохраняем финальные event counts
-    await StorageHelpers.saveEventCountsSafely(this.storage, this.chainId, wallet, finalEventCounts);
+    await StorageHelpers.saveEventCounts(this.storage, this.chainId, wallet, finalEventCounts);
 
     return { eventCounts: finalEventCounts, recoveredShields };
   }
@@ -192,7 +192,7 @@ export class HDRecovery {
       event.blockNumber,
       shield.token,
       shield.amount,
-      event.args.fee?.toString() || '0',
+      event.args.fee || 0n,
       shield.commitment,
       'shield',
       hdIndex
@@ -210,7 +210,7 @@ export class HDRecovery {
       event.blockNumber,
       shield.token,
       shield.amount,
-      '0',
+      0n,
       shield.commitment,
       'received',
       hdIndex
@@ -228,8 +228,8 @@ export class HDRecovery {
       event.transactionHash,
       event.blockNumber,
       event.args.token,
-      event.args.amount.toString(),
-      event.args.fee?.toString() || '0',
+      event.args.amount,
+      event.args.fee || 0n,
       event.args.commitment,
       undefined,
       undefined,
@@ -248,7 +248,7 @@ export class HDRecovery {
       event.blockNumber,
       remainderShield.token,
       remainderShield.amount,
-      '0',
+      0n,
       remainderShield.commitment,
       'remainder',
       hdIndex
@@ -266,7 +266,7 @@ export class HDRecovery {
       event.blockNumber,
       shield.token,
       shield.amount,
-      '0',
+      0n,
       shield.commitment,
       'consolidate',
       hdIndex
@@ -294,7 +294,7 @@ export class HDRecovery {
           continue;
         }
 
-        await StorageHelpers.saveTransactionSafely(this.storage, this.chainId, wallet, transaction);
+        await StorageHelpers.saveTransaction(this.storage, this.chainId, wallet, transaction);
         saved++;
       } catch (error) {
         console.warn(`Failed to save transaction ${transaction.txHash}:`, error);
@@ -347,7 +347,7 @@ export class HDRecovery {
         console.log(`✅ Found our shield operation: shield/${expectedIndex}`);
         
         // Проверяем существование
-        const existingShield = await StorageHelpers.getShieldSafely(
+        const existingShield = await StorageHelpers.getShield(
           this.storage, this.chainId, wallet, actualCommitment
         );
         if (existingShield) return { isOurs: true };
@@ -356,7 +356,7 @@ export class HDRecovery {
           expectedSecret,
           actualCommitment,
           event.args.token,
-          event.args.amount.toString(),
+          event.args.amount,
           'shield',
           expectedIndex,
           event.transactionHash,
@@ -364,7 +364,7 @@ export class HDRecovery {
         );
 
         // Сохраняем только shield
-        await StorageHelpers.saveShieldSafely(this.storage, this.chainId, wallet, shield);
+        await StorageHelpers.saveShield(this.storage, this.chainId, wallet, shield);
         return { isOurs: true, shield };
       }
 
@@ -397,7 +397,7 @@ export class HDRecovery {
       const commitment = CryptoService.generateCommitment(decryptedSecret, wallet);
       
       // Проверяем существование
-      const existingShield = await StorageHelpers.getShieldSafely(
+      const existingShield = await StorageHelpers.getShield(
         this.storage, this.chainId, wallet, commitment
       );
       if (existingShield) return { isOurs: true };
@@ -409,7 +409,7 @@ export class HDRecovery {
           decryptedSecret,
           commitment,
           shieldInfo.token,
-          shieldInfo.amount.toString(),
+          shieldInfo.amount,
           'received',
           expectedIndex,
           event.transactionHash,
@@ -417,7 +417,7 @@ export class HDRecovery {
         );
 
         // Сохраняем только shield
-        await StorageHelpers.saveShieldSafely(this.storage, this.chainId, wallet, shield);
+        await StorageHelpers.saveShield(this.storage, this.chainId, wallet, shield);
         return { isOurs: true, shield };
       }
 
@@ -442,7 +442,7 @@ export class HDRecovery {
     try {
       const unshieldedCommitment = event.args.commitment;
       
-      const sourceShield = await StorageHelpers.getShieldSafely(
+      const sourceShield = await StorageHelpers.getShield(
         this.storage, this.chainId, wallet, unshieldedCommitment
       );
       
@@ -459,7 +459,7 @@ export class HDRecovery {
         console.log(`✅ Found remainder shield: remainder/${expectedRemainderIndex}`);
         
         // Проверяем существование
-        const existingRemainder = await StorageHelpers.getShieldSafely(
+        const existingRemainder = await StorageHelpers.getShield(
           this.storage, this.chainId, wallet, expectedRemainderCommitment
         );
         if (existingRemainder) return { 
@@ -472,7 +472,7 @@ export class HDRecovery {
           expectedRemainderSecret,
           expectedRemainderCommitment,
           remainderInfo.token,
-          remainderInfo.amount.toString(),
+          remainderInfo.amount,
           'remainder',
           expectedRemainderIndex,
           event.transactionHash,
@@ -480,7 +480,7 @@ export class HDRecovery {
         );
 
         // Сохраняем только remainder shield
-        await StorageHelpers.saveShieldSafely(this.storage, this.chainId, wallet, remainderShield);
+        await StorageHelpers.saveShield(this.storage, this.chainId, wallet, remainderShield);
         return { 
           isOurs: true, 
           createdRemainder: true, 
@@ -522,7 +522,7 @@ export class HDRecovery {
       console.log(`✅ Found our consolidation: consolidate/${expectedIndex}`);
       
       // Проверяем существование
-      const existingShield = await StorageHelpers.getShieldSafely(
+      const existingShield = await StorageHelpers.getShield(
         this.storage, this.chainId, wallet, newCommitment
       );
       if (existingShield) return { isOurs: true };
@@ -534,7 +534,7 @@ export class HDRecovery {
           expectedSecret,
           newCommitment,
           shieldInfo.token,
-          shieldInfo.amount.toString(),
+          shieldInfo.amount,
           'consolidate',
           expectedIndex,
           event.transactionHash,
@@ -542,7 +542,7 @@ export class HDRecovery {
         );
 
         // Сохраняем только shield
-        await StorageHelpers.saveShieldSafely(this.storage, this.chainId, wallet, shield);
+        await StorageHelpers.saveShield(this.storage, this.chainId, wallet, shield);
         return { isOurs: true, shield };
       }
 

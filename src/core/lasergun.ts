@@ -50,7 +50,7 @@ export default class LaserGun {
     this.configManager = new LaserGunConfigManager(config);
     this.tokenManager = new TokenManager(this.configManager, storage);
     this.shieldOperations = new ShieldOperations(this.configManager, storage, this.tokenManager);
-    this.transferOperations = new TransferOperations(this.configManager, storage, this.tokenManager);
+    this.transferOperations = new TransferOperations(this.configManager, storage);
     
     this.scanner = new EventScanner(
       config.contractAddress, config.provider, storage, config.chainId, scannerConfig);
@@ -80,7 +80,7 @@ export default class LaserGun {
         this.keys.privateKey as HexString, this.wallet, this.configManager.getConfig().chainId
       );
       
-      this.eventCounts = await StorageHelpers.loadEventCountsSafely(
+      this.eventCounts = await StorageHelpers.loadEventCounts(
         this.storage, this.configManager.getConfig().chainId, this.wallet
       );
 
@@ -97,12 +97,12 @@ export default class LaserGun {
   // SHIELD OPERATIONS (Delegated)
   // ====================
 
-  async shield(amount: string, tokenAddress: string): Promise<ShieldResult> {
+  async shield(amount: bigint, tokenAddress: string): Promise<ShieldResult> {
     this.ensureInitialized();
     return await this.shieldOperations.shield(amount, tokenAddress);
   }
 
-  async unshield(secret: HexString, amount: string, recipient: string): Promise<UnshieldResult> {
+  async unshield(secret: HexString, amount: bigint, recipient: string): Promise<UnshieldResult> {
     this.ensureInitialized();
     return await this.shieldOperations.unshield(secret, amount, recipient);
   }
@@ -117,7 +117,7 @@ export default class LaserGun {
   // ====================
 
   async transfer(
-    secret: HexString, amount: string, recipientCommitment: HexString, encryptedSecret: string
+    secret: HexString, amount: bigint, recipientCommitment: HexString, encryptedSecret: string
   ): Promise<TransferResult> {
     this.ensureInitialized();
     return await this.transferOperations.transfer(secret, amount, recipientCommitment, encryptedSecret);
@@ -144,7 +144,7 @@ export default class LaserGun {
     return await this.tokenManager.isValidToken(tokenAddress);
   }
 
-  async getAllowance(tokenAddress: string): Promise<string> {
+  async getAllowance(tokenAddress: string): Promise<bigint> {
     this.ensureInitialized();
     return await this.tokenManager.getAllowance(tokenAddress);
   }
@@ -219,7 +219,7 @@ export default class LaserGun {
 
   async getTransactionHistory(): Promise<Transaction[]> {
     this.ensureInitialized();
-    return await StorageHelpers.loadTransactionsSafely(
+    return await StorageHelpers.loadTransactions(
       this.storage, this.configManager.getConfig().chainId, this.wallet
     );
   }
@@ -228,7 +228,7 @@ export default class LaserGun {
 
   async getUserShields(): Promise<Shield[]> {
     this.ensureInitialized();
-    return await StorageHelpers.loadShieldsSafely(
+    return await StorageHelpers.loadShields(
       this.storage, this.configManager.getConfig().chainId, this.wallet
     );
   }
@@ -258,7 +258,7 @@ async getTokenShields(tokenAddress: string): Promise<Shield[]> {
     
     if (this.eventCounts) return this.eventCounts;
     
-    const counts = await StorageHelpers.loadEventCountsSafely(
+    const counts = await StorageHelpers.loadEventCounts(
       this.storage, this.configManager.getConfig().chainId, this.wallet
     );
     

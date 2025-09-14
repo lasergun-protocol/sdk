@@ -114,8 +114,8 @@ export class TokenManager {
         token: tokenAddress,
         symbol,
         decimals,
-        publicBalance: publicBalance.toString(),
-        privateBalance: privateBalance.toString()
+        publicBalance: publicBalance,
+        privateBalance: privateBalance
       };
       
     } catch (error) {
@@ -180,7 +180,7 @@ export class TokenManager {
   /**
    * Get user's public token allowance for LaserGun contract
    */
-  async getAllowance(tokenAddress: string): Promise<string> {
+  async getAllowance(tokenAddress: string): Promise<bigint> {
     try {
       const tokenContract = new Contract(
         tokenAddress, 
@@ -193,7 +193,7 @@ export class TokenManager {
         this.configManager.getConfig().contractAddress
       );
       
-      return allowance.toString();
+      return allowance;
       
     } catch (error) {
       throw new LaserGunError(

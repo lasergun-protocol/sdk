@@ -17,7 +17,7 @@ export class StorageHelpers {
   /**
    * Save shield with error handling
    */
-  static async saveShieldSafely(
+  static async saveShield(
     storage: IStorageAdapter,
     chainId: number,
     wallet: string,
@@ -36,7 +36,7 @@ export class StorageHelpers {
   /**
    * Save transaction with error handling
    */
-  static async saveTransactionSafely(
+  static async saveTransaction(
     storage: IStorageAdapter,
     chainId: number,
     wallet: string,
@@ -55,7 +55,7 @@ export class StorageHelpers {
   /**
    * Save event counts with error handling
    */
-  static async saveEventCountsSafely(
+  static async saveEventCounts(
     storage: IStorageAdapter,
     chainId: number,
     wallet: string,
@@ -74,7 +74,7 @@ export class StorageHelpers {
   /**
    * Load shields with error handling and validation
    */
-  static async loadShieldsSafely(
+  static async loadShields(
     storage: IStorageAdapter,
     chainId: number,
     wallet: string
@@ -93,7 +93,7 @@ export class StorageHelpers {
   /**
    * Load transactions with error handling and validation
    */
-  static async loadTransactionsSafely(
+  static async loadTransactions(
     storage: IStorageAdapter,
     chainId: number,
     wallet: string
@@ -112,7 +112,7 @@ export class StorageHelpers {
   /**
    * Load event counts with fallback to default
    */
-  static async loadEventCountsSafely(
+  static async loadEventCounts(
     storage: IStorageAdapter,
     chainId: number,
     wallet: string,
@@ -154,7 +154,7 @@ export class StorageHelpers {
   /**
    * Get shield by commitment with error handling
    */
-  static async getShieldSafely(
+  static async getShield(
     storage: IStorageAdapter,
     chainId: number,
     wallet: string,
@@ -189,7 +189,7 @@ export class StorageHelpers {
 
     for (const shield of shields) {
       try {
-        await StorageHelpers.saveShieldSafely(storage, chainId, wallet, shield);
+        await StorageHelpers.saveShield(storage, chainId, wallet, shield);
         saved++;
       } catch (error) {
         failed++;
@@ -222,7 +222,7 @@ export class StorageHelpers {
 
     for (const transaction of transactions) {
       try {
-        await StorageHelpers.saveTransactionSafely(storage, chainId, wallet, transaction);
+        await StorageHelpers.saveTransaction(storage, chainId, wallet, transaction);
         saved++;
       } catch (error) {
         failed++;
@@ -265,7 +265,7 @@ export class StorageHelpers {
   /**
    * Clear wallet data with error handling
    */
-  static async clearWalletDataSafely(
+  static async clearWalletData(
     storage: IStorageAdapter,
     chainId: number,
     wallet: string
@@ -283,7 +283,7 @@ export class StorageHelpers {
   /**
    * Get last scanned block with fallback
    */
-  static async getLastScannedBlockSafely(
+  static async getLastScannedBlock(
     storage: IStorageAdapter,
     chainId: number,
     wallet: string,
@@ -301,7 +301,7 @@ export class StorageHelpers {
   /**
    * Save last scanned block with error handling
    */
-  static async saveLastScannedBlockSafely(
+  static async saveLastScannedBlock(
     storage: IStorageAdapter,
     chainId: number,
     wallet: string,

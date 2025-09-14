@@ -34,7 +34,7 @@ export class EventProcessor {
       const commitment = CryptoService.generateCommitment(secret, wallet);
       
       // Check if already processed
-      const existingShield = await StorageHelpers.getShieldSafely(
+      const existingShield = await StorageHelpers.getShield(
         this.storage, this.chainId, wallet, commitment
       );
       if (existingShield) return;
@@ -44,7 +44,7 @@ export class EventProcessor {
       if (!shieldInfo.exists || shieldInfo.spent) return;
       
       // Update received count
-      const currentCounts = await StorageHelpers.loadEventCountsSafely(
+      const currentCounts = await StorageHelpers.loadEventCounts(
         this.storage, this.chainId, wallet, true
       );
       
@@ -55,14 +55,14 @@ export class EventProcessor {
         secret,
         commitment,
         shieldInfo.token,
-        shieldInfo.amount.toString(),
+        shieldInfo.amount,
         'received',
         newReceivedIndex,
         event.transactionHash,
         event.blockNumber
       );
 
-      await StorageHelpers.saveShieldSafely(this.storage, this.chainId, wallet, shield);
+      await StorageHelpers.saveShield(this.storage, this.chainId, wallet, shield);
       
       // Update event counts
       const updatedCounts = HDHelpers.updateEventCounts(
@@ -72,7 +72,7 @@ export class EventProcessor {
         event.blockNumber
       );
       
-      await StorageHelpers.saveEventCountsSafely(
+      await StorageHelpers.saveEventCounts(
         this.storage, this.chainId, wallet, updatedCounts
       );
       
@@ -82,14 +82,14 @@ export class EventProcessor {
         event.transactionHash,
         event.blockNumber,
         shieldInfo.token,
-        shieldInfo.amount.toString(),
-        '0',
+        shieldInfo.amount,
+        0n,
         commitment,
         'received',
         newReceivedIndex
       );
 
-      await StorageHelpers.saveTransactionSafely(
+      await StorageHelpers.saveTransaction(
         this.storage, this.chainId, wallet, transaction
       );
       

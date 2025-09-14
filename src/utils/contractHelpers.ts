@@ -12,7 +12,7 @@ export class ContractHelpers {
   /**
    * Get shield info with error handling
    */
-  static async getShieldInfoSafely(
+  static async getShieldInfo(
     contract: Contract,
     commitment: HexString
   ): Promise<{
@@ -43,7 +43,7 @@ export class ContractHelpers {
   /**
    * Check if commitment is active with error handling
    */
-  static async isCommitmentActiveSafely(
+  static async isCommitmentActive(
     contract: Contract,
     commitment: HexString
   ): Promise<boolean> {
@@ -59,7 +59,7 @@ export class ContractHelpers {
   /**
    * Get shield balance with error handling
    */
-  static async getShieldBalanceSafely(
+  static async getShieldBalance(
     contract: Contract,
     secret: HexString,
     tokenAddress: string
@@ -222,7 +222,7 @@ export class ContractHelpers {
   /**
    * Estimate gas for transaction
    */
-  static async estimateGasSafely(
+  static async estimateGas(
     contract: Contract,
     methodName: string,
     args: any[]
@@ -298,7 +298,7 @@ export class ContractHelpers {
   }>> {
     const results = await Promise.allSettled(
       commitments.map(async (commitment) => {
-        const info = await ContractHelpers.getShieldInfoSafely(contract, commitment);
+        const info = await ContractHelpers.getShieldInfo(contract, commitment);
         return {
           commitment,
           exists: info.exists,

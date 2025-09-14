@@ -198,9 +198,9 @@ export class RecoveryManager {
               shield.commitment
             );
             removed++;
-          } else if (shieldInfo.amount.toString() !== shield.amount) {
+          } else if (shieldInfo.amount !== shield.amount) {
             // Amount mismatch, update storage
-            const updatedShield = { ...shield, amount: shieldInfo.amount.toString() };
+            const updatedShield = { ...shield, amount: shieldInfo.amount };
             await this.storage.saveShield(
               this.configManager.getConfig().chainId, 
               this.configManager.getWallet(), 
