@@ -1,6 +1,7 @@
 import type { EventCounts, HDOperation, HexString, Shield, Transaction } from '../types';
 import { createEventCounts } from '../types';
 import { CryptoService, HDSecretManager } from '../crypto';
+import { StorageHelpers } from './storageHelpers';
 
 /**
  * HD (Hierarchical Derivation) helper utilities
@@ -24,7 +25,7 @@ export class HDHelpers {
     const secret = hdManager.deriveSecret(operation, index);
     const commitment = CryptoService.generateCommitment(secret, wallet);
     const derivationPath = `${operation}/${index}`;
-    
+
     return { secret, commitment, derivationPath };
   }
 
@@ -88,7 +89,7 @@ export class HDHelpers {
       }),
       ...additionalFields
     };
-    
+
     return baseTransaction;
   }
 
@@ -106,9 +107,11 @@ export class HDHelpers {
       remainder: currentCounts.remainder + (operation === 'remainder' ? increment : 0),
       received: currentCounts.received + (operation === 'received' ? increment : 0),
       consolidate: currentCounts.consolidate + (operation === 'consolidate' ? increment : 0),
+      unshield: currentCounts.unshield + (operation === 'unshield' ? increment : 0),
+      transfer: currentCounts.transfer + (operation === 'transfer' ? increment : 0),
       lastUpdatedBlock: blockNumber ? Math.max(blockNumber, currentCounts.lastUpdatedBlock) : currentCounts.lastUpdatedBlock
     };
-    
+
     return createEventCounts(updates);
   }
 
@@ -125,16 +128,13 @@ export class HDHelpers {
         return eventCounts.received;
       case 'consolidate':
         return eventCounts.consolidate;
+      case 'unshield':
+        return eventCounts.unshield;
+      case 'transfer':
+        return eventCounts.transfer;
       default:
         throw new Error(`Unknown HD operation: ${operation}`);
     }
-  }
-
-  /**
-   * Calculate sequential operation index (for operations without specific HD type)
-   */
-  static getSequentialIndex(eventCounts: EventCounts): number {
-    return eventCounts.shield + eventCounts.remainder + eventCounts.received + eventCounts.consolidate;
   }
 
   /**
@@ -145,7 +145,9 @@ export class HDHelpers {
       'shield': 1,
       'remainder': 2,
       'received': 3,
-      'consolidate': 4
+      'consolidate': 4,
+      'unshield': 5,
+      'transfer': 6
     };
     return priorities[operation] || 999;
   }
@@ -158,18 +160,18 @@ export class HDHelpers {
     if (parts.length !== 2) {
       throw new Error(`Invalid derivation path format: ${path}`);
     }
-    
+
     const [operation, indexStr] = parts;
     const index = parseInt(indexStr, 10);
-    
+
     if (isNaN(index) || index < 0) {
       throw new Error(`Invalid index in derivation path: ${path}`);
     }
-    
-    if (!['shield', 'remainder', 'received', 'consolidate'].includes(operation)) {
+
+    if (!['shield', 'remainder', 'received', 'consolidate', 'unshield', 'transfer'].includes(operation)) {
       throw new Error(`Invalid operation in derivation path: ${path}`);
     }
-    
+
     return { operation: operation as HDOperation, index };
   }
 
@@ -177,7 +179,7 @@ export class HDHelpers {
    * Compare event counts for changes
    */
   static compareEventCounts(
-    oldCounts: EventCounts, 
+    oldCounts: EventCounts,
     newCounts: EventCounts
   ): {
     hasChanges: boolean;
@@ -185,27 +187,37 @@ export class HDHelpers {
   } {
     const changes: Partial<Record<HDOperation, number>> = {};
     let hasChanges = false;
-    
+
     if (oldCounts.shield !== newCounts.shield) {
       changes.shield = newCounts.shield - oldCounts.shield;
       hasChanges = true;
     }
-    
+
     if (oldCounts.remainder !== newCounts.remainder) {
       changes.remainder = newCounts.remainder - oldCounts.remainder;
       hasChanges = true;
     }
-    
+
     if (oldCounts.received !== newCounts.received) {
       changes.received = newCounts.received - oldCounts.received;
       hasChanges = true;
     }
-    
+
     if (oldCounts.consolidate !== newCounts.consolidate) {
       changes.consolidate = newCounts.consolidate - oldCounts.consolidate;
       hasChanges = true;
     }
-    
+
+    if (oldCounts.unshield !== newCounts.unshield) {
+      changes.unshield = newCounts.unshield - oldCounts.unshield;
+      hasChanges = true;
+    }
+
+    if (oldCounts.transfer !== newCounts.transfer) {
+      changes.transfer = newCounts.transfer - oldCounts.transfer;
+      hasChanges = true;
+    }
+
     return { hasChanges, changes };
   }
 
@@ -227,12 +239,12 @@ export class HDHelpers {
     for (let i = 0; i < count; i++) {
       const index = startIndex + i;
       const { secret, commitment, derivationPath } = HDHelpers.generateHDSecretAndCommitment(
-        hdManager, 
-        operation, 
-        index, 
+        hdManager,
+        operation,
+        index,
         wallet
       );
-      
+
       yield { secret, commitment, derivationPath, index };
     }
   }
@@ -242,11 +254,7 @@ export class HDHelpers {
    */
   static createDefaultEventCounts(lastUpdatedBlock: number = 0): EventCounts {
     return createEventCounts({
-      shield: 0,
-      remainder: 0,
-      received: 0,
-      consolidate: 0,
-      lastUpdatedBlock
+      ...StorageHelpers.generateEmptyCounters(), lastUpdatedBlock
     });
   }
 
@@ -257,15 +265,17 @@ export class HDHelpers {
     if (counts.length === 0) {
       return HDHelpers.createDefaultEventCounts();
     }
-    
+
     const merged = {
       shield: Math.max(...counts.map(c => c.shield)),
       remainder: Math.max(...counts.map(c => c.remainder)),
       received: Math.max(...counts.map(c => c.received)),
       consolidate: Math.max(...counts.map(c => c.consolidate)),
+      unshield: Math.max(...counts.map(c => c.unshield)),
+      transfer: Math.max(...counts.map(c => c.transfer)),
       lastUpdatedBlock: Math.max(...counts.map(c => c.lastUpdatedBlock))
     };
-    
+
     return createEventCounts(merged);
   }
 }

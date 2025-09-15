@@ -4,11 +4,11 @@ export type Address = HexString;
 export type BigNumberish = string | number | bigint;import type { Provider, Signer } from 'ethers';
 
 // Import HD operation types from crypto module
-export type HDOperation = 'shield' | 'remainder' | 'received' | 'consolidate';
+export type HDOperation = 'shield' | 'remainder' | 'received' | 'consolidate' | 'unshield' | 'transfer';
 
 // HD metadata base interface to avoid duplication
 export interface HDMetadata {
-  readonly derivationPath: string; // e.g. "shield/5", "remainder/2"
+  readonly derivationPath: string; // e.g. "shield/5", "remainder/2", "unshield/3", "transfer/1"
   readonly hdIndex: number; // Index within operation type (>= 0)
   readonly hdOperation: HDOperation; // Operation type
 }
@@ -94,6 +94,8 @@ export interface EventCounts {
   readonly remainder: number; // Count of remainder operations (>= 0)
   readonly received: number; // Count of received transfers (>= 0)
   readonly consolidate: number; // Count of consolidation operations (>= 0)
+  readonly unshield: number; // Count of unshield operations (>= 0)
+  readonly transfer: number; // Count of transfer operations (>= 0)
   readonly lastUpdatedBlock: number; // Last block where counts were updated (> 0)
 }
 
@@ -103,6 +105,8 @@ export type CreateEventCounts = {
   readonly remainder?: number;
   readonly received?: number;
   readonly consolidate?: number;
+  readonly unshield?: number;
+  readonly transfer?: number;
   readonly lastUpdatedBlock: number;
 };
 
@@ -313,6 +317,8 @@ export const createEventCounts = (data: CreateEventCounts): EventCounts => {
     remainder: validateCount(data.remainder ?? 0, 'remainder'),
     received: validateCount(data.received ?? 0, 'received'),
     consolidate: validateCount(data.consolidate ?? 0, 'consolidate'),
+    unshield: validateCount(data.unshield ?? 0, 'unshield'),
+    transfer: validateCount(data.transfer ?? 0, 'transfer'),
     lastUpdatedBlock: data.lastUpdatedBlock
   };
 };

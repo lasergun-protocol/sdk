@@ -21,8 +21,8 @@ import {
 } from '../utils';
 
 /**
- * Shield-related operations module (REFACTORED)
- * Uses utilities to eliminate code duplication and reduce complexity
+ * Shield-related operations module (HD FULL)
+ * Uses HD nonce for ALL operations including unshield
  */
 export class ShieldOperations {
   private readonly configManager: LaserGunConfigManager;
@@ -112,6 +112,7 @@ export class ShieldOperations {
 
   /**
    * Unshield (convert back to public) tokens with HD remainder handling
+   * ИЗМЕНЕНО: Теперь использует HD nonce для unshield операции
    */
   async unshield(
     secret: HexString,
@@ -131,7 +132,6 @@ export class ShieldOperations {
       await ValidationUtils.validateShield(
         shieldInfo, secret, amount
       ); 
-
 
       // Handle remainder if needed
       const remainderAmount = shieldInfo.amount - amount;
@@ -167,7 +167,7 @@ export class ShieldOperations {
         );
       }
 
-      // Save main unshield transaction
+      // ИЗМЕНЕНО: Save unshield transaction with HD nonce
       await this.saveUnshieldTransaction(receipt, shieldInfo.token, netAmount, fee, recipient, commitment);
 
       return {
@@ -304,7 +304,7 @@ export class ShieldOperations {
   }
 
   /**
-   * Save unshield transaction (non-HD operation)
+   * ИЗМЕНЕНО: Save unshield transaction with HD nonce
    */
   private async saveUnshieldTransaction(
     receipt: any,
@@ -316,13 +316,21 @@ export class ShieldOperations {
   ): Promise<void> {
     const { chainId, wallet } = this.getStorageContext();
 
-    const unshieldIndex = HDHelpers.getSequentialIndex(this.eventCounts!);
+    // ИЗМЕНЕНО: Используем HD nonce для unshield
+    const unshieldIndex = this.eventCounts!.unshield;
     const transaction = HDHelpers.createHDTransaction(
       unshieldIndex, 'unshield', receipt.hash, receipt.blockNumber, token, amount, fee,
-      sourceCommitment, undefined, undefined, { to: recipient, fee }
+      sourceCommitment, 'unshield', unshieldIndex, { to: recipient, fee }
     );
 
     await StorageHelpers.saveTransaction(this.storage, chainId, wallet, transaction);
+
+    // ДОБАВЛЕНО: Обновляем и сохраняем unshield счетчик
+    const updatedCounts = HDHelpers.updateEventCounts(
+      this.eventCounts!, 'unshield', 1, receipt.blockNumber
+    );
+    await StorageHelpers.saveEventCounts(this.storage, chainId, wallet, updatedCounts);
+    this.eventCounts = updatedCounts;
   }
 
   /**
@@ -353,7 +361,6 @@ export class ShieldOperations {
       wallet: this.configManager.getWallet()
     };
   }
-
 
   /**
    * Validate and get shield info with parsed amount

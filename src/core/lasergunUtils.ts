@@ -41,6 +41,8 @@ export class LaserGunUtils {
       remainder: 0,
       received: 0,
       consolidate: 0,
+      unshield: 0,
+      transfer: 0,
       lastUpdatedBlock: 0
     };
   }

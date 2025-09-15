@@ -288,14 +288,14 @@ async getTokenShields(tokenAddress: string): Promise<Shield[]> {
   private initializeOperationModules(): void {
     if (!this.eventCounts) {
       this.eventCounts = {
-        shield: 0, remainder: 0, received: 0, consolidate: 0, lastUpdatedBlock: 0
+        shield: 0, remainder: 0, received: 0, consolidate: 0, lastUpdatedBlock: 0, unshield:0, transfer:0
       };
     }
 
     this.shieldOperations.setHDManager(this.hdManager!);
-    this.shieldOperations.setEventCounts(this.eventCounts);
+    this.shieldOperations.setEventCounts(this.eventCounts!);
     this.transferOperations.setHDManager(this.hdManager!);
-    this.transferOperations.setEventCounts(this.eventCounts);
+    this.transferOperations.setEventCounts(this.eventCounts!);
   }
 
   private ensureInitialized(): void {

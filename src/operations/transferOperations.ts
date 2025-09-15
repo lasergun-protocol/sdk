@@ -16,8 +16,8 @@ import {
 import { ShieldOperations } from './shieldOperations';
 
 /**
- * Transfer-related operations module (REFACTORED)
- * Handles private transfers between users with utilities
+ * Transfer-related operations module (HD FULL)
+ * Теперь использует HD nonce для transfer операций
  */
 export class TransferOperations {
   private readonly configManager: LaserGunConfigManager;
@@ -43,7 +43,7 @@ export class TransferOperations {
 
   /**
    * Transfer tokens privately to another user
-   * Creates transfer transaction with its own HD index
+   * ИЗМЕНЕНО: Теперь использует HD nonce для transfer операции
    */
   async transfer(
     secret: HexString,
@@ -66,20 +66,17 @@ export class TransferOperations {
         shieldInfo, secret, amount
       ); 
 
-
       // Execute transfer transaction
       const contract = this.configManager.getContract();
       const { transferFeePercent, feeDenominator } = await ContractHelpers.getFeeInfo(contract);
       const tx = await contract.transfer(secret, amount, recipientCommitment, encryptedSecret);
       const receipt = await ContractHelpers.waitForTransaction(tx);
 
-
       const { netAmount, fee } = ContractHelpers.calculateNetAmount(
         amount, transferFeePercent, feeDenominator
       );
 
-
-      // Save transfer transaction with sequential HD index
+      // ИЗМЕНЕНО: Save transfer transaction with HD nonce
       await this.saveTransferTransaction(
         receipt, shieldInfo.token, netAmount, fee,
         recipientCommitment, commitment
@@ -101,7 +98,7 @@ export class TransferOperations {
   }
 
   /**
-   * Save transfer transaction (non-HD operation with sequential index)
+   * ИЗМЕНЕНО: Save transfer transaction with HD nonce instead of sequential
    */
   private async saveTransferTransaction(
     receipt: any,
@@ -113,8 +110,8 @@ export class TransferOperations {
   ): Promise<void> {
     const { chainId, wallet } = this.getStorageContext();
 
-    // Transfer gets sequential index across all operations
-    const transferIndex = HDHelpers.getSequentialIndex(this.eventCounts!);
+    // ИЗМЕНЕНО: Используем HD nonce для transfer
+    const transferIndex = this.eventCounts!.transfer;
 
     const transaction = HDHelpers.createHDTransaction(
       transferIndex,
@@ -125,14 +122,21 @@ export class TransferOperations {
       amount,
       fee,
       recipientCommitment,
-      undefined, // No HD operation for transfers
-      undefined, // No HD index for transfers
+      'transfer', // ← HD operation
+      transferIndex, // ← HD index
       {
         from: sourceCommitment // Source commitment (consumed shield)
       }
     );
 
     await StorageHelpers.saveTransaction(this.storage, chainId, wallet, transaction);
+
+    // ДОБАВЛЕНО: Обновляем и сохраняем transfer счетчик
+    const updatedCounts = HDHelpers.updateEventCounts(
+      this.eventCounts!, 'transfer', 1, receipt.blockNumber
+    );
+    await StorageHelpers.saveEventCounts(this.storage, chainId, wallet, updatedCounts);
+    this.eventCounts = updatedCounts;
   }
 
   private getStorageContext(): { chainId: number; wallet: string } {

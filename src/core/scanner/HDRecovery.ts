@@ -13,7 +13,7 @@ import { HDHelpers, StorageHelpers } from '../../utils';
 /**
  * HD Recovery module for blockchain data recovery
  * Handles sequential scanning with deterministic HD counting
- * ИСПРАВЛЕНО: Сохраняет транзакции с правильными nonce и Event counts
+ * ИСПРАВЛЕНО: Полная поддержка HD для всех операций включая transfer
  */
 export class HDRecovery {
   private readonly storage: IStorageAdapter;
@@ -28,7 +28,7 @@ export class HDRecovery {
 
   /**
    * Sequential scan of blockchain with deterministic HD counting
-   * ИСПРАВЛЕНО: Правильные nonce для всех операций + Event counts синхронизация
+   * ИСПРАВЛЕНО: Поддержка transfer recovery + полная синхронизация счетчиков
    */
   async sequentialScan(
     contract: any,
@@ -44,19 +44,27 @@ export class HDRecovery {
   }> {
     const latestBlock = await provider.getBlockNumber();
     
-    // Initialize counters
-    let shieldIndex = 0;
-    let remainderIndex = 0;
-    let receivedIndex = 0;
-    let consolidateIndex = 0;
+    // ИСПРАВЛЕНО: Восстанавливаем индексы из актуальных EventCounts в storage
+    const existingEventCounts = await StorageHelpers.loadEventCounts(
+      this.storage, this.chainId, wallet, false
+    );
     
-    // Текущие event counts для правильного sequential nonce
-    let currentEventCounts = HDHelpers.createDefaultEventCounts(startBlock);
+    // Инициализируем локальные индексы из текущего состояния
+    let shieldIndex = existingEventCounts?.shield || 0;
+    let remainderIndex = existingEventCounts?.remainder || 0;
+    let receivedIndex = existingEventCounts?.received || 0;
+    let consolidateIndex = existingEventCounts?.consolidate || 0;
+    let unshieldIndex = existingEventCounts?.unshield || 0;
+    let transferIndex = existingEventCounts?.transfer || 0;
+    
+    // Используем существующие counts или создаем дефолтные
+    let currentEventCounts = existingEventCounts || HDHelpers.createDefaultEventCounts(startBlock);
     
     const recoveredShields: Shield[] = [];
     const pendingTransactions: Transaction[] = [];
     
     console.log(`🔍 Sequential scan from block ${startBlock} to ${latestBlock}...`);
+    console.log(`📊 Starting indices: shield=${shieldIndex}, remainder=${remainderIndex}, received=${receivedIndex}, consolidate=${consolidateIndex}, unshield=${unshieldIndex}, transfer=${transferIndex}`);
 
     // Process blocks in sequential batches
     for (let blockStart = startBlock; blockStart <= latestBlock; blockStart += this.batchSize) {
@@ -79,12 +87,14 @@ export class HDRecovery {
                 if (shieldResult.isOurs) {
                   if (shieldResult.shield) {
                     recoveredShields.push(shieldResult.shield);
-                    // Создаем транзакцию с правильным nonce
                     const transaction = this.createShieldTransaction(event, shieldIndex, shieldResult.shield);
                     pendingTransactions.push(transaction);
                     
-                    // Обновляем counts
+                    // ИСПРАВЛЕНО: Синхронизируем локальный индекс с currentEventCounts
                     currentEventCounts = HDHelpers.updateEventCounts(currentEventCounts, 'shield', 1, event.blockNumber);
+                    
+                    // ДОБАВЛЕНО: Сохраняем counts в БД после каждого изменения
+                    await StorageHelpers.saveEventCounts(this.storage, this.chainId, wallet, currentEventCounts);
                   }
                   shieldIndex++;
                 }
@@ -97,12 +107,14 @@ export class HDRecovery {
                 if (receivedResult.isOurs) {
                   if (receivedResult.shield) {
                     recoveredShields.push(receivedResult.shield);
-                    // Создаем транзакцию с правильным nonce
                     const transaction = this.createReceivedTransaction(event, receivedIndex, receivedResult.shield);
                     pendingTransactions.push(transaction);
                     
-                    // Обновляем counts
+                    // ИСПРАВЛЕНО: Синхронизируем локальный индекс с currentEventCounts
                     currentEventCounts = HDHelpers.updateEventCounts(currentEventCounts, 'received', 1, event.blockNumber);
+                    
+                    // ДОБАВЛЕНО: Сохраняем counts в БД после каждого изменения
+                    await StorageHelpers.saveEventCounts(this.storage, this.chainId, wallet, currentEventCounts);
                   }
                   receivedIndex++;
                 }
@@ -110,24 +122,41 @@ export class HDRecovery {
 
               case 'Unshielded':
                 const unshieldResult = await this.processUnshieldedEvent(
-                  event, contract, hdManager, wallet, remainderIndex
+                  event, contract, hdManager, wallet, remainderIndex, unshieldIndex, transferIndex, allEvents
                 );
                 if (unshieldResult.isOurs) {
-                  // Создаем unshield транзакцию с правильным sequential nonce
-                  const unshieldTx = this.createUnshieldTransaction(event, currentEventCounts);
-                  pendingTransactions.push(unshieldTx);
-                  
-                  // Unshield не обновляет HD counts - это non-HD операция
+                  if (unshieldResult.isTransfer) {
+                    // ДОБАВЛЕНО: Это transfer операция
+                    const transferTx = this.createTransferTransaction(event, transferIndex);
+                    pendingTransactions.push(transferTx);
+                    
+                    // Обновляем transfer счетчик
+                    currentEventCounts = HDHelpers.updateEventCounts(currentEventCounts, 'transfer', 1, event.blockNumber);
+                    await StorageHelpers.saveEventCounts(this.storage, this.chainId, wallet, currentEventCounts);
+                    transferIndex++;
+                  } else {
+                    // Это обычный unshield
+                    const unshieldTx = this.createUnshieldTransaction(event, unshieldIndex);
+                    pendingTransactions.push(unshieldTx);
+                    
+                    // Обновляем unshield счетчик
+                    currentEventCounts = HDHelpers.updateEventCounts(currentEventCounts, 'unshield', 1, event.blockNumber);
+                    await StorageHelpers.saveEventCounts(this.storage, this.chainId, wallet, currentEventCounts);
+                    unshieldIndex++;
+                  }
                   
                   if (unshieldResult.createdRemainder && unshieldResult.remainderShield) {
                     recoveredShields.push(unshieldResult.remainderShield);
-                    // Создаем remainder транзакцию с HD nonce
                     const remainderTx = this.createRemainderTransaction(event, remainderIndex, unshieldResult.remainderShield);
                     pendingTransactions.push(remainderTx);
-                    remainderIndex++;
                     
-                    // Обновляем counts для remainder
+                    // ИСПРАВЛЕНО: Синхронизируем локальный индекс с currentEventCounts
                     currentEventCounts = HDHelpers.updateEventCounts(currentEventCounts, 'remainder', 1, event.blockNumber);
+                    
+                    // ДОБАВЛЕНО: Сохраняем counts в БД после каждого изменения  
+                    await StorageHelpers.saveEventCounts(this.storage, this.chainId, wallet, currentEventCounts);
+                    
+                    remainderIndex++;
                   }
                 }
                 break;
@@ -139,12 +168,14 @@ export class HDRecovery {
                 if (consolidateResult.isOurs) {
                   if (consolidateResult.shield) {
                     recoveredShields.push(consolidateResult.shield);
-                    // Создаем транзакцию с правильным nonce
                     const transaction = this.createConsolidateTransaction(event, consolidateIndex, consolidateResult.shield);
                     pendingTransactions.push(transaction);
                     
-                    // Обновляем counts
+                    // ИСПРАВЛЕНО: Синхронизируем локальный индекс с currentEventCounts
                     currentEventCounts = HDHelpers.updateEventCounts(currentEventCounts, 'consolidate', 1, event.blockNumber);
+                    
+                    // ДОБАВЛЕНО: Сохраняем counts в БД после каждого изменения
+                    await StorageHelpers.saveEventCounts(this.storage, this.chainId, wallet, currentEventCounts);
                   }
                   consolidateIndex++;
                 }
@@ -166,16 +197,18 @@ export class HDRecovery {
     // Batch save все транзакции
     await this.batchSaveTransactions(pendingTransactions, wallet);
 
-    // Финальные event counts с правильными значениями
+    // ИСПРАВЛЕНО: Используем актуальные currentEventCounts вместо пересоздания
     const finalEventCounts = createEventCounts({
-      shield: shieldIndex,
-      remainder: remainderIndex,
-      received: receivedIndex,
-      consolidate: consolidateIndex,
+      shield: currentEventCounts.shield,
+      remainder: currentEventCounts.remainder, 
+      received: currentEventCounts.received,
+      consolidate: currentEventCounts.consolidate,
+      unshield: currentEventCounts.unshield,
+      transfer: currentEventCounts.transfer,
       lastUpdatedBlock: latestBlock
     });
 
-    // Сохраняем финальные event counts
+    // Финальное сохранение counts в БД
     await StorageHelpers.saveEventCounts(this.storage, this.chainId, wallet, finalEventCounts);
 
     return { eventCounts: finalEventCounts, recoveredShields };
@@ -218,12 +251,29 @@ export class HDRecovery {
   }
 
   /**
-   * ИСПРАВЛЕНО: Создание транзакции unshield с правильным sequential nonce
+   * ДОБАВЛЕНО: Создание транзакции transfer с HD nonce
    */
-  private createUnshieldTransaction(event: any, currentEventCounts: EventCounts): Transaction {
-    const sequentialNonce = HDHelpers.getSequentialIndex(currentEventCounts);
+  private createTransferTransaction(event: any, hdIndex: number): Transaction {
     return HDHelpers.createHDTransaction(
-      sequentialNonce,
+      hdIndex, // HD nonce
+      'transfer',
+      event.transactionHash,
+      event.blockNumber,
+      event.args.token,
+      event.args.amount,
+      0n, // Transfer fee в Unshielded event не отображается
+      event.args.commitment,
+      'transfer', // HD operation
+      hdIndex // HD index
+    );
+  }
+
+  /**
+   * ИЗМЕНЕНО: Создание транзакции unshield с HD nonce
+   */
+  private createUnshieldTransaction(event: any, hdIndex: number): Transaction {
+    return HDHelpers.createHDTransaction(
+      hdIndex, // HD nonce
       'unshield',
       event.transactionHash,
       event.blockNumber,
@@ -231,9 +281,8 @@ export class HDRecovery {
       event.args.amount,
       event.args.fee || 0n,
       event.args.commitment,
-      undefined,
-      undefined,
-      { from: event.args.commitment }
+      'unshield', // HD operation
+      hdIndex // HD index
     );
   }
 
@@ -430,14 +479,17 @@ export class HDRecovery {
 
   /**
    * Process Unshielded event and check if remainder was created
-   * ИСПРАВЛЕНО: Возвращает sourceShield для создания транзакции
+   * ИСПРАВЛЕНО: Добавлена детекция transfer операций и исправлены параметры
    */
   private async processUnshieldedEvent(
     event: any,
     contract: any,
     hdManager: HDSecretManager,
     wallet: string,
-    expectedRemainderIndex: number
+    expectedRemainderIndex: number,
+    expectedUnshieldIndex: number,
+    expectedTransferIndex: number,
+    allEvents: any[]
   ) {
     try {
       const unshieldedCommitment = event.args.commitment;
@@ -446,9 +498,16 @@ export class HDRecovery {
         this.storage, this.chainId, wallet, unshieldedCommitment
       );
       
-      if (!sourceShield) return { isOurs: false, createdRemainder: false };
+      if (!sourceShield) return { isOurs: false, createdRemainder: false, isTransfer: false };
 
-      console.log(`✅ Found our unshield operation for commitment: ${unshieldedCommitment}`);
+      // ДОБАВЛЕНО: Детекция transfer - ищем SecretDelivered в той же транзакции
+      const isTransfer = this.isTransferOperation(event, allEvents);
+      
+      if (isTransfer) {
+        console.log(`✅ Found our transfer operation: transfer/${expectedTransferIndex}`);
+      } else {
+        console.log(`✅ Found our unshield operation: unshield/${expectedUnshieldIndex}`);
+      }
       
       const expectedRemainderSecret = hdManager.deriveSecret('remainder', expectedRemainderIndex);
       const expectedRemainderCommitment = CryptoService.generateCommitment(expectedRemainderSecret, wallet);
@@ -465,6 +524,7 @@ export class HDRecovery {
         if (existingRemainder) return { 
           isOurs: true, 
           createdRemainder: true,
+          isTransfer,
           sourceShield
         };
 
@@ -485,6 +545,7 @@ export class HDRecovery {
           isOurs: true, 
           createdRemainder: true, 
           remainderShield,
+          isTransfer,
           sourceShield
         };
       }
@@ -492,12 +553,30 @@ export class HDRecovery {
       return { 
         isOurs: true, 
         createdRemainder: false,
+        isTransfer,
         sourceShield
       };
     } catch (error) {
       console.warn(`Failed to process Unshielded event:`, error);
-      return { isOurs: false, createdRemainder: false };
+      return { isOurs: false, createdRemainder: false, isTransfer: false };
     }
+  }
+
+  /**
+   * ДОБАВЛЕНО: Определяет является ли Unshielded операция частью transfer
+   */
+  private isTransferOperation(unshieldedEvent: any, allEvents: any[]): boolean {
+    // Transfer создает Unshielded + SecretDelivered в одной транзакции
+    const sameTxEvents = allEvents.filter(e => 
+      e.transactionHash === unshieldedEvent.transactionHash
+    );
+    
+    // Ищем SecretDelivered в той же транзакции
+    const hasSecretDelivered = sameTxEvents.some(e => 
+      e.eventType === 'SecretDelivered'
+    );
+    
+    return hasSecretDelivered;
   }
 
   /**

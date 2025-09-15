@@ -1,3 +1,4 @@
+import { LaserGunUtils } from '../core/lasergunUtils';
 import type { IStorageAdapter, Shield, Transaction, EventCounts } from '../types';
 import { ErrorHelpers } from './errorHelpers'; 
 
@@ -109,6 +110,18 @@ export class StorageHelpers {
     }
   }
 
+  static generateEmptyCounters (): EventCounts {
+    return {
+      shield: 0,
+      remainder: 0,
+      received: 0,
+      consolidate: 0,
+      lastUpdatedBlock: 0,
+      unshield: 0,
+      transfer: 0
+    };
+  }
+
   /**
    * Load event counts with fallback to default
    */
@@ -122,26 +135,14 @@ export class StorageHelpers {
       const counts = await storage.loadEventCounts(chainId, wallet);
       
       if (!counts && createDefault) {
-        return {
-          shield: 0,
-          remainder: 0,
-          received: 0,
-          consolidate: 0,
-          lastUpdatedBlock: 0
-        };
+        return  LaserGunUtils.createDefaultEventCounts()
       }
       
       return counts;
     } catch (error) {
       if (createDefault) {
         console.warn('Failed to load event counts, using defaults:', error);
-        return {
-          shield: 0,
-          remainder: 0,
-          received: 0,
-          consolidate: 0,
-          lastUpdatedBlock: 0
-        };
+        return LaserGunUtils.createDefaultEventCounts();
       }
       
       throw ErrorHelpers.storageError(
