@@ -16,6 +16,7 @@ import type {
   HexString,
   EventCounts,
   ScannedBlockCallback,
+  HDOperation,
 } from '../types';
 import { CryptoService, HDSecretManager } from '../crypto';
 import { EventScanner } from './scanner';
@@ -280,6 +281,15 @@ async getTokenShields(tokenAddress: string): Promise<Shield[]> {
   getConfigManager(): LaserGunConfigManager { return this.configManager; }
   getTokenManager(): TokenManager { return this.tokenManager; }
   getRecoveryManager(): RecoveryManager { return this.recoveryManager; }
+
+/**
+ * Generate HD secret for specific operation and index
+ * Requires initialization before use
+ */
+deriveSecret(operation: HDOperation, index: number): HexString {
+  this.ensureInitialized();
+  return this.hdManager!.deriveSecret(operation, index);
+}
 
   // ====================
   // PRIVATE HELPERS
