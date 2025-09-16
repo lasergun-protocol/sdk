@@ -3,452 +3,506 @@
 [![npm version](https://badge.fury.io/js/%40lasergun-protocol%2Fsdk.svg)](https://badge.fury.io/js/%40lasergun-protocol%2Fsdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-TypeScript SDK for LaserGun privacy protocol - anonymous ERC20 transfers with zero-knowledge proofs.
+TypeScript SDK for the [LaserGun](https://lasergun.xyz) privacy protocol. The package wraps the on-chain LaserGun contract and ships batteries-included helpers for generating deterministic secrets, shielding ERC-20 balances, performing anonymous transfers, and keeping a local cache in sync with blockchain events.
 
-## 🚀 Quick Start
+**Why use the SDK?**
+- Works with modern **ethers v6** BigInt flows (peer dependency).
+- Deterministic HD derivation for every operation (shield, transfer, unshield, remainder, consolidate, received).
+- Pluggable storage adapters for browsers or custom server backends.
+- Event scanner with recovery utilities to rebuild local state safely.
+- Strongly typed results, descriptive `LaserGunError` codes, and convenience utilities for crypto primitives.
+
+## Table of Contents
+- [Getting Started](#getting-started)
+  - [Installation](#installation)
+  - [Quick Start](#quick-start)
+- [Configuration Reference](#configuration-reference)
+- [Storage Adapters](#storage-adapters)
+  - [Browser Local Storage](#browser-local-storage)
+  - [Example: In-memory Node Adapter](#example-in-memory-node-adapter)
+- [Core Operations](#core-operations)
+  - [Shielding Tokens](#shielding-tokens)
+  - [Unshielding Back to Public Tokens](#unshielding-back-to-public-tokens)
+  - [Private Transfers](#private-transfers)
+  - [Consolidating Multiple Shields](#consolidating-multiple-shields)
+  - [Deriving Secrets Manually](#deriving-secrets-manually)
+- [Receiving Private Transfers](#receiving-private-transfers)
+- [Token & Balance Utilities](#token--balance-utilities)
+- [Querying Cached Data](#querying-cached-data)
+- [Scanner & Realtime Updates](#scanner--realtime-updates)
+- [Recovery & Maintenance](#recovery--maintenance)
+- [Utilities & Helper Exports](#utilities--helper-exports)
+- [Error Handling](#error-handling)
+- [Development](#development)
+- [Supported Networks](#supported-networks)
+- [Links](#links)
+- [License](#license)
+- [Security Notice](#security-notice)
+
+## Getting Started
 
 ### Installation
 
 ```bash
 npm install @lasergun-protocol/sdk ethers
+# or
+yarn add @lasergun-protocol/sdk ethers
 ```
 
-### Basic Setup
+> **Prerequisites**
+> - Node.js ≥ 18
+> - `ethers` ≥ 6.7 (peer dependency)
+> - An account with funds on the network you intend to use
+> - Access to an RPC endpoint (e.g. Polygon Amoy)
+
+### Quick Start
+
+1. **Configure environment variables** for your RPC endpoint and signer. A `.env` file works well during development:
+   ```env
+   AMOY_RPC=https://rpc-amoy.polygon.technology
+   PRIVATE_KEY=0xabc123...
+   ```
+2. **Instantiate LaserGun** with a provider, signer, and storage adapter. The SDK includes a browser-ready `LocalStorageAdapter`; for Node.js you can bring your own (see [Storage Adapters](#storage-adapters)).
+3. **Call `initialize()`** once per session to derive deterministic keys, register your public key with the contract, load persisted data, and prime the event scanner.
+4. **Execute operations** such as `shield`, `unshield`, or `transfer`. All monetary values are `bigint`—use `parseUnits` / `formatUnits` from `ethers` for conversions.
 
 ```typescript
+import 'dotenv/config';
+import { JsonRpcProvider, Wallet, parseUnits, formatUnits } from 'ethers';
 import LaserGun, { LocalStorageAdapter } from '@lasergun-protocol/sdk';
-import { ethers } from 'ethers';
 
-// Configure the SDK
-const config = {
-  contractAddress: '0x7a9046293dF17d2ec81eF4606376bFE1b45A2f18', // Amoy testnet
-  chainId: 80002,
-  provider: new ethers.JsonRpcProvider('your-rpc-url'),
-  signer: wallet, // ethers Wallet or Signer
-  signMessage: 'LaserGun Key Generation' // Optional: custom message for key derivation
-};
+const provider = new JsonRpcProvider(process.env.AMOY_RPC!);
+const signer = new Wallet(process.env.PRIVATE_KEY!, provider);
 
-// Create storage adapter
-const storage = new LocalStorageAdapter();
-
-// Initialize SDK
-const lasergun = new LaserGun(config, storage);
-await lasergun.initialize();
-```
-
-## 📋 Core Operations
-
-### Shield (Make Tokens Private)
-
-Convert public ERC20 tokens into private shields:
-
-```typescript
-// Shield 100 tokens (tokens become private)
-const result = await lasergun.shield(
-  ethers.parseUnits('100', 18), // amount
-  '0x...' // token address
+const lasergun = new LaserGun(
+  {
+    contractAddress: '0x7a9046293dF17d2ec81eF4606376bFE1b45A2f18',
+    chainId: 80002,
+    provider,
+    signer,
+    signMessage: 'LaserGun Key Generation Demo' // optional custom derivation message
+  },
+  new LocalStorageAdapter()
 );
 
-console.log('Shield created:', result.commitment);
-console.log('Net amount:', result.netAmount);
-console.log('Fee paid:', result.fee);
-```
-
-### Unshield (Convert Back to Public)
-
-Convert private shields back to public tokens:
-
-```typescript
-// Get your shields
-const shields = await lasergun.getUserShields();
-const shield = shields[0];
-
-// Unshield all tokens
-const result = await lasergun.unshield(
-  shield.secret,           // secret from shield
-  shield.amount,           // amount to withdraw
-  '0x...',                // recipient address
-  shield.token             // token address
-);
-
-// Partial unshield (with remainder)
-const partialResult = await lasergun.unshield(
-  shield.secret,
-  ethers.parseUnits('50', 18), // withdraw only 50 tokens
-  '0x...',                     // recipient address
-  shield.token
-);
-console.log('Remainder commitment:', partialResult.remainderCommitment);
-```
-
-### Anonymous Transfer
-
-Transfer private tokens to another user:
-
-```typescript
-// Generate recipient commitment and encrypt secret (complex process)
-// This requires recipient's public key and ECIES encryption
-const recipientCommitment = '0x...'; // Generated commitment for recipient
-const encryptedSecret = '0x...';     // ECIES encrypted secret
-
-// Transfer tokens anonymously - REQUIRES commitment and encrypted secret!
-const result = await lasergun.transfer(
-  shield.secret,           // your shield secret
-  '25',                    // amount to transfer (string)
-  recipientCommitment,     // recipient's commitment (HexString)
-  encryptedSecret          // ECIES encrypted secret for recipient (string)
-);
-
-console.log('Recipient commitment:', result.recipientCommitment);
-console.log('Your remainder:', result.remainderCommitment);
-```
-
-### Consolidate Shields
-
-Combine multiple shields into one:
-
-```typescript
-// Get multiple shields for same token
-const tokenShields = await lasergun.getTokenShields('0x...');
-const secrets = tokenShields.map(s => s.secret);
-
-// Consolidate into single shield
-const result = await lasergun.consolidate(secrets, '0x...');
-console.log('New consolidated commitment:', result.recipientCommitment);
-```
-
-## 🔍 Querying Data
-
-### Get Balances
-
-```typescript
-// Get combined public + private balance
-const balance = await lasergun.getTokenBalance('0x...');
-console.log('Public balance:', balance.publicBalance);
-console.log('Private balance:', balance.privateBalance);
-console.log('Total:', ethers.formatUnits(
-  BigInt(balance.publicBalance) + BigInt(balance.privateBalance), 
-  balance.decimals
-));
-```
-
-### Get Transaction History
-
-```typescript
-// Get all transactions
-const history = await lasergun.getTransactionHistory();
-
-// Filter by type
-const shields = history.filter(tx => tx.type === 'shield');
-const transfers = history.filter(tx => tx.type === 'transfer');
-const received = history.filter(tx => tx.type === 'received');
-```
-
-### Get User Shields
-
-```typescript
-// Get all shields
-const allShields = await lasergun.getUserShields();
-
-// Get shields for specific token
-const tokenShields = await lasergun.getTokenShields('0x...');
-
-// Check individual shield
-const shield = await lasergun.getShield('commitment_hash');
-```
-
-## 🔐 Key Management
-
-### ECIES Key Generation
-
-The SDK automatically generates deterministic ECIES keys for encryption:
-
-```typescript
-// Initialize automatically generates keys
 await lasergun.initialize();
 
-// Get public key for registration
-const publicKey = lasergun.getPublicKey();
+const amount = parseUnits('5', 18);
+const { success, commitment, netAmount, fee } = await lasergun.shield(amount, '0xYourTokenAddress');
 
-// Register on contract (required for receiving transfers)
-await lasergun.ensurePublicKeyRegistered();
-
-// Check registration status
-const isRegistered = await lasergun.isPublicKeyRegistered();
-```
-
-### HD Derivation
-
-The SDK uses hierarchical deterministic (HD) key derivation for enhanced privacy:
-
-```typescript
-// Keys are derived deterministically from your wallet signature
-// Each operation type gets its own derivation path:
-// - Shield operations: m/shield/0, m/shield/1, ...
-// - Remainder operations: m/remainder/0, m/remainder/1, ...
-// - Received transfers: m/received/0, m/received/1, ...
-// - Consolidation: m/consolidate/0, m/consolidate/1, ...
-```
-
-## 🔄 Event Scanning & Recovery
-
-### Automatic Event Monitoring
-
-```typescript
-// Configure scanner
-const scannerConfig = {
-  startBlock: 45000000,    // Block to start scanning from
-  batchSize: 5000,         // Events per batch
-  enableHDRecovery: true,  // Enable HD-based recovery
-  maxHDIndex: 1000        // Maximum HD index to check
-};
-
-// Start automatic scanning
-await lasergun.startScanner(true); // true = auto-recover missing data
-
-// Listen for real-time events
-lasergun.onTransaction((transaction) => {
-  console.log('New transaction:', transaction.type, transaction.amount);
-});
-
-lasergun.onError((error) => {
-  console.error('Scanner error:', error.message);
-});
-
-lasergun.onStateChange((state) => {
-  console.log('Scanner state:', state.isRunning, state.currentBlock);
-});
-```
-
-### Data Recovery
-```typescript
-// Sync local data with blockchain
-const sync = await lasergun.syncWithBlockchain();
-console.log(`Added: ${sync.added}, Updated: ${sync.updated}, Removed: ${sync.removed}`);
-
-// Validate data integrity
-const validation = await lasergun.validateDataIntegrity();
-if (!validation.isValid) {
-  console.log('Issues found:', validation.issues);
-  console.log('Suggestions:', validation.suggestions);
+if (success) {
+  console.log('Shield commitment:', commitment);
+  console.log('Net amount credited:', formatUnits(netAmount ?? 0n, 18));
+  console.log('Protocol fee:', formatUnits(fee ?? 0n, 18));
 }
 ```
 
-## 🏗️ Architecture
+After initialization you can start the event scanner, send private transfers, or recover persisted data using the sections below.
 
-### Core Components
+## Configuration Reference
 
-- **LaserGun** - Main SDK class with all operations
-- **EventScanner** - Real-time blockchain event monitoring with HD recovery
-- **CryptoService** - ECIES encryption and HD key derivation
-- **StorageAdapter** - Pluggable data persistence (localStorage, custom)
-- **ConfigManager** - Contract interaction and configuration
-- **Operations Modules** - Modular shield, transfer, and token operations
+`LaserGun` expects a `LaserGunConfig` object:
 
-### Data Flow
+| Property | Type | Description |
+| --- | --- | --- |
+| `contractAddress` | `string` | LaserGun contract address on the current network |
+| `chainId` | `number` | EVM chain id (e.g. `80002` for Polygon Amoy) |
+| `provider` | `Provider` | Ethers v6 provider used for reads and scanner operations |
+| `signer` | `Signer` | Ethers v6 signer used for transactions and deterministic key derivation |
+| `signMessage?` | `string` | Optional custom message for signing during key derivation |
 
-```
-1. Shield:    Public Tokens → Private Shield → HD-derived secret
-2. Transfer:  Shield Secret → ECIES Encrypted → Recipient Shield  
-3. Unshield:  Shield Secret → Public Tokens + Optional Remainder
-4. Recovery:  Blockchain Events → HD Path Discovery → Secret Recreation
-```
+You can optionally pass a `ScannerConfig` as the third constructor argument (or to helper creators) to fine-tune event scanning:
 
-### Privacy Model
+| Property | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `startBlock` | `number` | `0` | First block to inspect when recovering history |
+| `batchSize` | `number` | `1000` | Number of blocks fetched per scanner batch |
+| `enableHDRecovery` | `boolean` | `true` | Automatically run HD recovery before scanning |
+| `maxHDIndex` | `number` | `1000` | Limit for HD brute force when recovering gaps |
 
-- **Commitments**: `keccak256(secret, recipient_address)` - hide ownership
-- **HD Secrets**: Deterministic generation from wallet signatures
-- **ECIES Encryption**: Secure secret delivery to recipients
-- **Event Scanning**: No on-chain address linkage during recovery
+## Storage Adapters
 
-## 🔧 Configuration
+The SDK persists encrypted keys, shields, transactions, HD counters, and scanner progress through the `IStorageAdapter` interface. You can plug in any implementation that extends the abstract `StorageAdapter` base class.
 
-### Storage Adapters
+### Browser Local Storage
 
 ```typescript
-// Built-in localStorage adapter
 import { LocalStorageAdapter } from '@lasergun-protocol/sdk';
-const storage = new LocalStorageAdapter();
 
-// Custom storage adapter
-import { StorageAdapter } from '@lasergun-protocol/sdk';
+const storage = new LocalStorageAdapter(); // requires window.localStorage
+const lasergun = new LaserGun(config, storage);
+```
 
-class CustomAdapter extends StorageAdapter {
-  async saveTransaction(chainId, wallet, nonce, transaction) {
-    // Your implementation
+> `LocalStorageAdapter` throws if `window.localStorage` is unavailable (e.g. Node.js). Use a custom adapter for server environments.
+
+### Example: In-memory Node Adapter
+
+The snippet below implements a minimal in-memory adapter. It is suitable for tests or short-lived scripts and demonstrates the required methods for a production-ready adapter (swap the `Map` usage for a database or filesystem persistence in real projects).
+
+```typescript
+import {
+  StorageAdapter,
+  type Transaction,
+  type Shield,
+  type CryptoKeys,
+  type EventCounts
+} from '@lasergun-protocol/sdk';
+
+class InMemoryStorageAdapter extends StorageAdapter {
+  private transactions = new Map<string, Map<number, Transaction>>();
+  private shields = new Map<string, Map<string, Shield>>();
+  private keys = new Map<string, CryptoKeys>();
+  private lastBlock = new Map<string, number>();
+  private eventCounts = new Map<string, EventCounts>();
+
+  private walletKey(chainId: number, wallet: string): string {
+    return `${chainId}:${wallet.toLowerCase()}`;
   }
-  
-  async loadTransactions(chainId, wallet) {
-    // Your implementation
+
+  async saveTransaction(chainId: number, wallet: string, nonce: number, tx: Transaction): Promise<void> {
+    const key = this.walletKey(chainId, wallet);
+    const map = this.transactions.get(key) ?? new Map<number, Transaction>();
+    map.set(nonce, tx);
+    this.transactions.set(key, map);
   }
-  
-  // ... implement all required methods
+
+  async loadTransactions(chainId: number, wallet: string): Promise<Transaction[]> {
+    const key = this.walletKey(chainId, wallet);
+    const map = this.transactions.get(key);
+    return map ? [...map.values()].sort((a, b) => a.nonce - b.nonce) : [];
+  }
+
+  async getTransaction(chainId: number, wallet: string, nonce: number): Promise<Transaction | null> {
+    const key = this.walletKey(chainId, wallet);
+    return this.transactions.get(key)?.get(nonce) ?? null;
+  }
+
+  async getLastNonce(chainId: number, wallet: string): Promise<number> {
+    const txs = await this.loadTransactions(chainId, wallet);
+    return txs.length ? Math.max(...txs.map(tx => tx.nonce)) : 0;
+  }
+
+  async deleteWalletData(chainId: number, wallet: string): Promise<void> {
+    const key = this.walletKey(chainId, wallet);
+    this.transactions.delete(key);
+    this.shields.delete(key);
+    this.keys.delete(key);
+    this.lastBlock.delete(key);
+    this.eventCounts.delete(key);
+  }
+
+  async saveKeys(chainId: number, wallet: string, keys: CryptoKeys): Promise<void> {
+    this.keys.set(this.walletKey(chainId, wallet), keys);
+  }
+
+  async loadKeys(chainId: number, wallet: string): Promise<CryptoKeys | null> {
+    return this.keys.get(this.walletKey(chainId, wallet)) ?? null;
+  }
+
+  async saveShield(chainId: number, wallet: string, shield: Shield): Promise<void> {
+    const key = this.walletKey(chainId, wallet);
+    const map = this.shields.get(key) ?? new Map<string, Shield>();
+    map.set(shield.commitment, shield);
+    this.shields.set(key, map);
+  }
+
+  async loadShields(chainId: number, wallet: string): Promise<Shield[]> {
+    const key = this.walletKey(chainId, wallet);
+    const map = this.shields.get(key);
+    return map ? [...map.values()].sort((a, b) => a.timestamp - b.timestamp) : [];
+  }
+
+  async getShield(chainId: number, wallet: string, commitment: string): Promise<Shield | null> {
+    return this.shields.get(this.walletKey(chainId, wallet))?.get(commitment) ?? null;
+  }
+
+  async deleteShield(chainId: number, wallet: string, commitment: string): Promise<void> {
+    this.shields.get(this.walletKey(chainId, wallet))?.delete(commitment);
+  }
+
+  async saveLastScannedBlock(chainId: number, wallet: string, blockNumber: number): Promise<void> {
+    this.lastBlock.set(this.walletKey(chainId, wallet), blockNumber);
+  }
+
+  async getLastScannedBlock(chainId: number, wallet: string): Promise<number | null> {
+    return this.lastBlock.get(this.walletKey(chainId, wallet)) ?? null;
+  }
+
+  async saveEventCounts(chainId: number, wallet: string, counts: EventCounts): Promise<void> {
+    this.eventCounts.set(this.walletKey(chainId, wallet), counts);
+  }
+
+  async loadEventCounts(chainId: number, wallet: string): Promise<EventCounts | null> {
+    return this.eventCounts.get(this.walletKey(chainId, wallet)) ?? null;
+  }
 }
 ```
 
-### Network Configuration
+Use the adapter just like the bundled one: `const lasergun = new LaserGun(config, new InMemoryStorageAdapter());`.
+
+## Core Operations
+
+All monetary values returned by the SDK are `bigint`. Convert to human-readable strings with `formatUnits` and convert inputs with `parseUnits`.
+
+### Shielding Tokens
 
 ```typescript
-const config = {
-  contractAddress: '0x...',    // LaserGun contract address
-  chainId: 80002,              // Network chain ID
-  provider: provider,          // ethers.js Provider
-  signer: signer,             // ethers.js Signer
-  signMessage: 'Custom'       // Optional: custom key derivation message
-};
+const amount = parseUnits('50', 18);
+const { success, commitment, netAmount, fee, derivationPath } = await lasergun.shield(amount, tokenAddress);
+
+if (success) {
+  console.log(`Shield stored at commitment ${commitment}`);
+  console.log(`Derivation path: ${derivationPath}`); // e.g. shield/0
+}
 ```
 
-### Scanner Configuration
+The SDK checks the signer’s public balance, ensures allowance for the LaserGun contract, submits the transaction, and persists the resulting shield with HD metadata. `netAmount` equals `amount - fee` using the on-chain fee schedule.
+
+### Unshielding Back to Public Tokens
 
 ```typescript
-const scannerConfig = {
-  startBlock: 45000000,        // Starting block for event scanning
-  batchSize: 5000,            // Events to process per batch
-  enableHDRecovery: true,     // Enable HD-based secret recovery
-  maxHDIndex: 1000           // Maximum HD index to check
-};
+import type { HexString } from '@lasergun-protocol/sdk';
+
+const [firstShield] = await lasergun.getUserShields();
+if (!firstShield) throw new Error('Nothing to unshield');
+
+const withdrawAmount = firstShield.amount / 2n; // withdraw half
+const result = await lasergun.unshield(
+  firstShield.secret as HexString,
+  withdrawAmount,
+  '0xRecipientAddress'
+);
+
+if (result.success) {
+  console.log('Public tokens released:', result.amount?.toString());
+  if (result.remainderDerivationPath) {
+    console.log('Remainder stored at', result.remainderDerivationPath);
+  }
+}
 ```
 
-## 🛡️ Security Features
+If you withdraw less than the full shield, the SDK automatically derives a remainder secret, stores the new shield, and records all operations locally.
 
-### Key Security
+### Private Transfers
 
-- **Deterministic Generation**: Keys derived from wallet signatures
-- **No Key Storage**: Private keys never stored, always regenerated
-- **HD Derivation**: Unique secrets for each operation type
-- **Local Only**: All cryptographic operations happen client-side
-
-### Privacy Protection
-
-- **Commitment Scheme**: Hide shield ownership and amounts
-- **ECIES Encryption**: Secure secret delivery without address exposure
-- **Event Unlinkability**: No on-chain connection between sender/recipient
-- **Metadata Isolation**: Each operation uses fresh derived secrets
-
-## 📚 API Reference
-
-### Core Methods
-
-| Method | Description | Returns |
-|--------|-------------|---------|
-| `initialize()` | Initialize SDK and generate keys | `Promise<void>` |
-| `shield(amount, token)` | Convert public tokens to private | `Promise<ShieldResult>` |
-| `unshield(secret, amount, recipient, token)` | Convert private to public | `Promise<UnshieldResult>` |
-| `transfer(secret, amount, recipient, token)` | Anonymous private transfer | `Promise<TransferResult>` |
-| `consolidate(secrets, token)` | Merge multiple shields | `Promise<TransferResult>` |
-
-### Query Methods
-
-| Method | Description | Returns |
-|--------|-------------|---------|
-| `getTokenBalance(token)` | Public + private balance | `Promise<TokenBalance>` |
-| `getUserShields()` | All user shields | `Promise<Shield[]>` |
-| `getTokenShields(token)` | Shields for specific token | `Promise<Shield[]>` |
-| `getTransactionHistory()` | All transactions | `Promise<Transaction[]>` |
-| `getShield(commitment)` | Get specific shield | `Promise<Shield \| null>` |
-
-### Recovery Methods
-
-| Method | Description | Returns |
-|--------|-------------|---------| 
-| `syncWithBlockchain()` | Sync local with blockchain | `Promise<SyncResult>` |
-| `validateDataIntegrity()` | Check data consistency | `Promise<ValidationResult>` | 
-
-### Utility Methods
-
-| Method | Description | Returns |
-|--------|-------------|---------|
-| `startScanner(autoRecover?)` | Start event monitoring | `Promise<void>` |
-| `stopScanner()` | Stop event monitoring | `Promise<void>` |
-| `ensurePublicKeyRegistered()` | Register ECIES public key | `Promise<void>` |
-| `isPublicKeyRegistered()` | Check key registration | `Promise<boolean>` |
-| `getWallet()` | Get wallet address | `string` |
-| `getPublicKey()` | Get ECIES public key | `string` |
-
-## 🎛️ Event Callbacks
+Sending a private transfer requires two values generated off-chain: the `recipientCommitment` and an ECIES `encryptedSecret` the recipient can decrypt.
 
 ```typescript
-// Transaction events
-lasergun.onTransaction((transaction: Transaction) => {
-  console.log(`${transaction.type}: ${transaction.amount}`);
-});
+import { CryptoService } from '@lasergun-protocol/sdk';
 
-// Error handling
-lasergun.onError((error: LaserGunError) => {
-  console.error(`Error ${error.code}: ${error.message}`);
-});
+const recipientWallet = '0xRecipientAddress';
+const recipientPublicKey = '0xRecipientPublicKey'; // recipient shares this after initialize()
 
-// Scanner state changes
-lasergun.onStateChange((state: ScannerState) => {
-  console.log(`Scanner: ${state.isRunning ? 'running' : 'stopped'}`);
-  console.log(`Current block: ${state.currentBlock}`);
-});
-// 
-lasergun.onBlockScanned((blockId: Number) => {
-  console.log(`Last block scanned: ${blockId}`);
-});
+const counts = await lasergun.getEventCounts();
+const transferIndex = counts.transfer; // next HD slot for transfers
+
+const recipientSecret = lasergun.deriveSecret('transfer', transferIndex);
+const recipientCommitment = CryptoService.generateCommitment(recipientSecret, recipientWallet);
+const encryptedSecret = await CryptoService.encryptSecret(recipientSecret, recipientPublicKey);
+
+const transferTx = await lasergun.transfer(
+  sourceShield.secret as HexString,
+  parseUnits('5', 18),
+  recipientCommitment,
+  encryptedSecret
+);
+
+if (transferTx.success) {
+  console.log('Transfer broadcast:', transferTx.txHash);
+}
 ```
 
-## 🧪 Testing
+> **Tips**
+> - The recipient obtains `recipientPublicKey` by calling `lasergun.getPublicKey()` after `initialize()`.
+> - Share the recipient’s wallet address (needed for `generateCommitment`) over a secure channel.
+> - The event scanner automatically decrypts incoming `SecretDelivered` events for the recipient—see [Receiving Private Transfers](#receiving-private-transfers).
 
-### Unit Tests
+### Consolidating Multiple Shields
 
-```bash
-npm test
+Merge several shields of the same token into a single output commitment:
+
+```typescript
+const tokenShields = await lasergun.getTokenShields(tokenAddress);
+const secrets = tokenShields.map(shield => shield.secret as HexString);
+
+const consolidated = await lasergun.consolidate(secrets, tokenAddress);
+if (consolidated.success) {
+  console.log('New commitment:', consolidated.recipientCommitment);
+}
 ```
 
-### Integration Tests
+### Deriving Secrets Manually
 
-```bash
-# Requires running blockchain node
-npm run test:integration
+For advanced flows (pre-generating QR codes, reserving commitments, etc.) you can derive HD secrets yourself. Use the latest event counts to pick the next available index.
+
+```typescript
+const counts = await lasergun.getEventCounts();
+const nextShieldSecret = lasergun.deriveSecret('shield', counts.shield);
+const futureCommitment = CryptoService.generateCommitment(nextShieldSecret, lasergun.getWallet());
 ```
 
-### Coverage
+## Receiving Private Transfers
 
-```bash
-npm run test:coverage
+When another user sends you an encrypted secret, the SDK can decrypt and store it automatically.
+
+```typescript
+lasergun.onTransaction(tx => {
+  if (tx.type === 'received') {
+    console.log('New private deposit:', tx.amount.toString(), 'at', tx.commitment);
+  }
+});
+
+lasergun.onError(err => console.error('Scanner issue', err.code, err.message));
+
+await lasergun.startScanner(true); // auto-run recoverFromBlockchain() before streaming
 ```
 
-## 🤝 Contributing
+`startScanner(true)` ensures your local cache matches the blockchain before monitoring new blocks. Each `SecretDelivered` event is decrypted with your HD keys; if it belongs to you, the SDK stores the shield and emits a `received` transaction callback.
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md).
+To process transfers manually (without the scanner), fetch `encryptedSecret` values from transaction receipts and call `CryptoService.decryptSecret(encryptedSecret, privateKey)`.
 
-### Development Setup
+## Token & Balance Utilities
+
+```typescript
+import { formatUnits } from 'ethers';
+
+const balance = await lasergun.getTokenBalance(tokenAddress);
+console.log(
+  `${balance.symbol}: public=${formatUnits(balance.publicBalance, balance.decimals)}, ` +
+  `private=${formatUnits(balance.privateBalance, balance.decimals)}`
+);
+
+const info = await lasergun.getTokenInfo(tokenAddress);
+const allowance = await lasergun.getAllowance(tokenAddress);
+const isSupported = await lasergun.isValidToken(tokenAddress);
+```
+
+`getTokenBalance` cross-checks local shields against the contract to verify they are still active, producing an accurate private balance.
+
+## Querying Cached Data
+
+| Method | Description |
+| --- | --- |
+| `getUserShields()` | List every shield tracked for the active wallet |
+| `getTokenShields(token)` | Filter shields by ERC-20 address |
+| `getTransactionHistory()` | Chronological list of operations with HD metadata |
+| `getEventCounts()` | Current HD counters for each operation (throws if recovery has never been run) |
+| `getWallet()` / `getPublicKey()` | Inspect the active identity and exported public key |
+
+## Scanner & Realtime Updates
+
+```typescript
+await lasergun.startScanner(); // pass true to auto-recover first
+
+lasergun.onBlockScanned(block => console.log('Scanner caught up to block', block));
+lasergun.onStateChange(state => console.log('Scanner running?', state.isRunning));
+
+// Later when shutting down:
+await lasergun.stopScanner();
+```
+
+`EventScanner` streams blockchain events, updates HD counters, and persists results using your storage adapter. Advanced users can import `EventScanner` directly for custom orchestration.
+
+## Recovery & Maintenance
+
+The recovery manager helps rebuild state after reinstalling an app, switching storage backends, or verifying integrity before audits.
+
+```typescript
+await lasergun.recoverFromBlockchain();
+const validation = await lasergun.validateDataIntegrity();
+
+if (!validation.isValid) {
+  console.warn('Issues detected:', validation.issues);
+  console.info('Suggested fixes:', validation.suggestions);
+}
+
+const syncResult = await lasergun.syncWithBlockchain();
+console.log('Sync delta:', syncResult);
+
+const stats = await lasergun.getRecoveryStats();
+console.log('Recovery stats:', stats);
+```
+
+Helper namespaces make common flows more ergonomic:
+
+```typescript
+import { recovery, diagnostics } from '@lasergun-protocol/sdk';
+
+const instance = await recovery.createWithRecovery(config); // initialize + recover in one call
+await recovery.validateIntegrity(instance);
+await recovery.syncWithBlockchain(instance);
+
+const report = await diagnostics.getDiagnostics(instance);
+await diagnostics.clearWalletData(config.chainId, instance.getWallet());
+await diagnostics.clearAllData();
+```
+
+## Utilities & Helper Exports
+
+The root module exports several utilities in addition to the `LaserGun` class:
+
+- `VERSION` – runtime version string.
+- `utils`
+  - `isValidHexString`, `isValidAddress`
+  - `generateCommitment(secret, recipient)` and `generateSecret(privateKey, nonce)`
+  - `createWithLocalStorage(config, scannerConfig?)`
+  - `createWithValidation(config, scannerConfig?)` – initialize + integrity check + auto-sync on issues
+- `recovery` – see [Recovery & Maintenance](#recovery--maintenance)
+- `diagnostics` – diagnostic helpers shown above
+- `CryptoService` – cryptographic primitives (key generation, ECIES encrypt/decrypt, HD manager factory)
+- `EventScanner` – standalone scanner class for advanced integrations
+- `LocalStorageAdapter` – browser storage implementation
+- All public TypeScript types (`LaserGunConfig`, `ShieldResult`, `ScannerState`, `LaserGunError`, etc.)
+
+## Error Handling
+
+Every operation returns a success flag or throws a `LaserGunError` with a stable `ErrorCode` enum. Use these codes to display actionable messages in your app.
+
+| Code | Meaning |
+| --- | --- |
+| `INVALID_CONFIG` | Configuration missing required fields or addresses |
+| `NETWORK_ERROR` | Provider unreachable or chain ID mismatch |
+| `CONTRACT_ERROR` | Smart contract interaction failed |
+| `CRYPTO_ERROR` | Cryptographic primitive failed (encryption, HD derivation, etc.) |
+| `STORAGE_ERROR` | Storage adapter rejected a read/write operation |
+| `VALIDATION_ERROR` | Invalid user input (addresses, amounts, secrets) |
+| `INSUFFICIENT_BALANCE` | Shield amount exceeds available public balance |
+| `SCANNER_ERROR` | Scanner or recovery routine failed |
+| `HD_DERIVATION_ERROR`, `EVENT_COUNT_ERROR` | HD bookkeeping problems |
+
+When an operation returns `{ success: false, error }`, the same `LaserGunError` instance is attached for convenient UI handling.
+
+## Development
 
 ```bash
-git clone https://github.com/lasergun-protocol/sdk
+git clone https://github.com/lasergun-protocol/sdk.git
 cd sdk
 npm install
-npm run build
-npm run test
+
+npm run build       # Compile TypeScript to dist/
+npm run typecheck   # tsconfig type-only check
+npm run lint        # ESLint over src/
+npm test            # Jest unit tests
+npm run clean       # Remove dist/
 ```
 
-### Build
-
-```bash
-npm run build          # Build distribution
-npm run build:watch    # Watch mode
-npm run typecheck      # Type checking only
-```
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## 🔗 Links
-
-- **Website**: [https://lasergun.xyz](https://lasergun.xyz)
-- **Documentation**: [https://docs.lasergun.xyz](https://docs.lasergun.xyz)
-- **Contract Repository**: [https://github.com/lasergun-protocol/contracts](https://github.com/lasergun-protocol/contracts)
-- **Discord**: [https://discord.gg/CQXM99fCbn](https://discord.gg/CQXM99fCbn)  
-- **Twitter**: [@LaserGunProto](https://x.com/lasergun_proto)
-
-## 🛠️ Supported Networks
+## Supported Networks
 
 - **Polygon Amoy Testnet**: `0x7a9046293dF17d2ec81eF4606376bFE1b45A2f18`
-- **Mainnet**: Coming soon
+- **Mainnet**: coming soon
 
----
+## Links
 
-**⚠️ Security Notice**: This is experimental software. Use at your own risk. Always verify contract addresses and test with small amounts first.
+- Website: [https://lasergun.xyz](https://lasergun.xyz)
+- Documentation: [https://docs.lasergun.xyz](https://docs.lasergun.xyz)
+- Contracts: [https://github.com/lasergun-protocol/contracts](https://github.com/lasergun-protocol/contracts)
+- Discord: [https://discord.gg/CQXM99fCbn](https://discord.gg/CQXM99fCbn)
+- Twitter / X: [@LaserGunProto](https://x.com/lasergun_proto)
+
+## License
+
+MIT License – see [LICENSE](LICENSE).
+
+## Security Notice
+
+LaserGun is experimental software. Always double-check contract addresses, keep private keys secure, and test with small amounts before moving significant value. Prefer using test networks before deploying to mainnet.
