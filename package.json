@@ -1,6 +1,6 @@
 {
   "name": "@lasergun-protocol/sdk",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "TypeScript SDK for LaserGun privacy protocol - anonymous ERC20 transfers",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
