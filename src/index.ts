@@ -2,7 +2,11 @@ import { LocalStorageAdapter } from './adapters/localStorage';
 import LaserGun from './core/lasergun';
 import { CryptoService } from './crypto';
 import { LaserGunConfig, ScannerConfig } from './types';
- 
+
+// Main LaserGun SDK export
+export { default as LaserGun } from './core/lasergun';
+
+
 // Core modules
 export { EventScanner } from './core/scanner';
 export { CryptoService } from './crypto';
