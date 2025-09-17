@@ -25,10 +25,10 @@ import { RecoveryManager } from './recoveryManager';
 import { ShieldOperations } from '../operations/shieldOperations';
 import { TransferOperations } from '../operations/transferOperations';
 import { TokenManager } from '../operations/tokenOperations';
-import { ErrorHelpers, StorageHelpers } from '../utils';
+import { ContractHelpers, ErrorHelpers, StorageHelpers } from '../utils';
 
 /**
- * Main LaserGun SDK class (REFACTORED)
+ * Main LaserGun SDK class 
  * Modular architecture with utility-based error handling
  */
 export default class LaserGun {
@@ -281,6 +281,13 @@ async getTokenShields(tokenAddress: string): Promise<Shield[]> {
   getConfigManager(): LaserGunConfigManager { return this.configManager; }
   getTokenManager(): TokenManager { return this.tokenManager; }
   getRecoveryManager(): RecoveryManager { return this.recoveryManager; }
+  async isCommitmentActive(commitment: HexString): Promise<boolean> {
+    return ContractHelpers.isCommitmentActive(this.configManager.getContract(), commitment);
+  }
+
+  // ====================
+  // HD KEY DERIVATION (Delegated)
+  // ====================
 
 /**
  * Generate HD secret for specific operation and index

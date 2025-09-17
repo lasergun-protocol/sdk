@@ -258,6 +258,14 @@ if (success) {
 
 The SDK checks the signer’s public balance, ensures allowance for the LaserGun contract, submits the transaction, and persists the resulting shield with HD metadata. `netAmount` equals `amount - fee` using the on-chain fee schedule.
 
+
+### Check shield actitivty
+```typescript
+const isActive = await lasergun.isCommitmentActive(commitment);
+```
+
+The SDK returns the current state of the shield
+
 ### Unshielding Back to Public Tokens
 
 ```typescript
