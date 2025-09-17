@@ -5,7 +5,7 @@ import { LaserGunConfig, ScannerConfig } from './types';
 
 // Main LaserGun SDK export
 export { default as LaserGun } from './core/lasergun';
-
+export { default } from './core/lasergun';
 
 // Core modules
 export { EventScanner } from './core/scanner';
