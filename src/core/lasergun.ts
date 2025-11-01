@@ -85,7 +85,6 @@ export default class LaserGun {
         this.storage, this.configManager.getConfig().chainId, this.wallet
       );
 
-      await this.configManager.ensurePublicKeyRegistered();
       this.initializeOperationModules();
       await this.scanner.initialize(this.wallet, this.keys);
 
