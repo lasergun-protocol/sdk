@@ -23,21 +23,6 @@ export interface OwnedNote {
   spentBy?: string; // tx hash of the spend (when locally known)
 }
 
-export interface OwnedEnvelope {
-  id: string;
-  assetId: number;
-  di: number[];
-  openAt: number;
-  expiry: number;
-  permitRequired: boolean;
-  open: boolean;
-  claimed: boolean;
-  branch: 'recipient' | 'sender';
-  yBase: string;
-  XBase: string;
-  notes: OwnedNote[];
-}
-
 export interface ScanOptions {
   fromBlock?: number;
   toBlock?: number | 'latest';
@@ -46,7 +31,6 @@ export interface ScanOptions {
 
 export interface ScanResult {
   notes: OwnedNote[];
-  envelopes: OwnedEnvelope[];
   scannedTo: number;
 }
 
@@ -106,7 +90,7 @@ export async function scanOwnedNotes(
     if (sb !== undefined) note.spentBy = sb;
     notes.push(note);
   }
-  return { notes, envelopes: [], scannedTo: to };
+  return { notes, scannedTo: to };
 }
 
 async function queryRange(
@@ -123,35 +107,6 @@ async function queryRange(
     out.push(...events);
   }
   return out;
-}
-
-/**
- * Attach envelope events: notes derived from EnvelopeClaimed / Refunded
- * X_r / X_s branches for envelopes owned by this wallet.
- */
-export function enrichEnvelopes(
-  notes: OwnedNote[],
-  envelopeEvents: Array<{
-    id: string; assetId: number; di: number[]; openAt: number; expiry: number;
-    permitRequired: boolean; open: boolean; claimed: boolean;
-    X_r: string; X_s: string; kind: 'opened' | 'claimed' | 'refunded';
-  }>,
-  viewSecret: bigint,
-  spendSecret: bigint,
-): OwnedEnvelope[] {
-  const envelopes: OwnedEnvelope[] = [];
-  for (const ev of envelopeEvents) {
-    for (const [branch, XBase] of [['recipient', ev.X_r], ['sender', ev.X_s]] as const) {
-      const { owned, y } = tryRecoverNote(viewSecret, spendSecret, hexToBytes(XBase), hexToBytes(XBase));
-      // X_r itself is not a commitment; ownership test uses its derived note:
-      // y_r = H(v·E_r) + p only for the owner. For envelope branches the
-      // wallet records the branch when the base point equals the known
-      // stealth point of a past mint/change (E-matching done by the caller).
-      void owned; void y; void branch; void XBase;
-    }
-    void notes;
-  }
-  return envelopes;
 }
 
 export { nullifierOfKey, decodeUnchecked };

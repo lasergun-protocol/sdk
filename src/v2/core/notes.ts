@@ -77,32 +77,6 @@ export function buildChangeBatch(
   return batch;
 }
 
-/** Build a payee batch for a recipient meta-address (stelth delivery). */
-export function buildPayeeBatch(
-  assetId: number, amount: bigint, meta: MetaAddress,
-): StealthBatch {
-  const dis = decompose(assetId, amount);
-  const batch: StealthBatch = { di: dis, E: [], X: [] };
-  const freshP = deriveSpendSecret(meta);
-  for (const di of dis) {
-    const note = deriveNoteForRecipient(meta, freshP, di);
-    batch.E.push(note.E);
-    batch.X.push(note.X);
-  }
-  return batch;
-}
-
-/**
- * The payee spend secret is known only to the recipient; the sender derives
- * notes with the recipient's view key V and a random per-note spend offset.
- * In v2 notes are single-key: y = H(v·E) + p where p is the recipient's.
- * For delivery the sender cannot know p; the PRD resolves this by having the
- * sender use the recipient's published spend point P: X = H(e·V)·G + P.
- */
-function deriveSpendSecret(_meta: MetaAddress): bigint {
-  return 0n; // unused: buildPayeeBatchTo handles the X = s·G + P form
-}
-
 /** Sender-form delivery notes: X = H(e·V)·G + P (6.1, sender derivation). */
 export function buildPayeeBatchTo(
   assetId: number, amount: bigint, meta: MetaAddress,

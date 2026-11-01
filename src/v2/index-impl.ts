@@ -9,4 +9,4 @@ export {
 } from './core/notes.js';
 export type { RingMember, SignedSpend, StealthBatch, SpendPlan } from './core/notes.js';
 export { scanOwnedNotes } from './core/scanner.js';
-export type { OwnedNote, OwnedEnvelope, ScanResult, ScanOptions } from './core/scanner.js';
+export type { OwnedNote, ScanResult, ScanOptions } from './core/scanner.js';

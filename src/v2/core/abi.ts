@@ -45,7 +45,16 @@ export const FACTORY_ABI = [
   'function create2(bytes32 salt, bytes initcode, bool payout) external returns (address receiver)',
   'function predictAddress(bytes32 salt, bytes initcode) external view returns (address)',
   'function core() external view returns (address)',
-  'event Deployed(address indexed receiver, bool payout, bytes32 indexed salt)',
+  'function owner() external view returns (address)',
+  'function receiverTemplateHash() external view returns (bytes32)',
+  'function receiverTemplateLen() external view returns (uint256)',
+  'function outputReceiverTemplateHash() external view returns (bytes32)',
+  'function outputReceiverTemplateLen() external view returns (uint256)',
+  'function setTemplateHashes(bytes32 receiverHash, uint256 receiverLen, bytes32 outputHash, uint256 outputLen) external',
+  'function transferOwnership(address newOwner) external',
+  'event ReceiverDeployed(address indexed receiver, bytes32 indexed salt, bool payout)',
+  'event TemplateHashesSet(bytes32 receiverTemplateHash, bytes32 outputReceiverTemplateHash)',
+  'event OwnerTransferred(address indexed previousOwner, address indexed newOwner)',
 ];
 
 export const RECEIVER_ABI = [

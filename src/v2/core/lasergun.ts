@@ -43,6 +43,8 @@ export interface LaserGunV2Config {
   receiverTemplate?: string;
   /** OutputReceiver creation code for payout self-registration. */
   outputReceiverTemplate?: string;
+  /** Protocol treasury (Receiver ctor arg; fees land on the executor). */
+  treasury?: string;
 }
 
 export interface EnterOptions {
@@ -236,8 +238,9 @@ export class LaserGunV2 {
   ): string {
     const asset = assetId === 1 ? this.cfg.usdc : this.cfg.weth;
     if (!this.cfg.pool) throw new Error('PoolRequired');
+    if (!this.cfg.treasury) throw new Error('TreasuryRequired');
     return RECEIVER_CTOR.encodeDeploy([
-      this.cfg.core, this.cfg.pool, asset, TREASURY_PLACEHOLDER,
+      this.cfg.core, this.cfg.pool, asset, this.cfg.treasury,
       assetId, depositAmount, di, E, X,
     ]);
   }
@@ -455,6 +458,7 @@ export class LaserGunV2 {
    */
   async claimEnvelope(
     id: string, m: number, di: number[], assetId: number,
+    permitSig?: string,
   ): Promise<{ notes: Array<{ X: string; y: string; di: number }>; permitSig?: string }> {
     void assetId;
     const view = await this.envelopeView(id);
@@ -483,13 +487,15 @@ export class LaserGunV2 {
     }
 
     if (view.permitRequired) {
-      // The permit signs over the sender key y_s — the claimer cannot produce
-      // it; it must be supplied out-of-band by the sender (9.1).
-      throw new Error('ClaimPermissionRequired: obtain sig from sender');
+      if (!permitSig) {
+        // The permit signs over the sender key y_s — the claimer cannot
+        // produce it; it must be supplied out-of-band by the sender (9.1).
+        throw new Error('ClaimPermissionRequired: obtain sig from sender');
+      }
     }
-    const tx = await this.core.claimEnvelope(id, '0x');
+    const tx = await this.core.claimEnvelope(id, permitSig ?? '0x');
     await tx.wait();
-    return { notes };
+    return permitSig ? { notes, permitSig } : { notes };
   }
 
   async refundEnvelope(id: string): Promise<string> {
@@ -548,8 +554,6 @@ const ERC20_ABI_FRAGMENT = [
   'function decimals() external view returns (uint8)',
 ];
 
-const TREASURY_PLACEHOLDER = '0x0000000000000000000000000000000000000000';
-
 import { Interface } from 'ethers';
 const RECEIVER_CTOR = new Interface([
   'constructor(address core, address pool, address asset, address treasury, uint256 assetId, uint256 depositAmount, uint256[] denomIndices, bytes[] ephemerals, bytes[] commitments)',
@@ -603,6 +607,12 @@ function bytesOf(hexish: string): Uint8Array {
  * Envelope branch points (9.1): the sender derives E_r/E_s fresh and the
  * branch commitment X = H(e·V)·G + P over the recipient (claim) / self
  * (refund) meta-address.
+ *
+ * Fresh RANDOM e per branch is safe here: the branch key s = H(e·V) is
+ * recovered by the key owner WITHOUT knowing e — v·E == e·V (ECDH) — so
+ * y_r = H(v·E_r)+p works from on-chain data alone (claim, refund alike).
+ * The sender keeps no envelope secrets besides the permit key y_s when
+ * permitRequired; nothing else needs persistence.
  */
 function envelopePoints(
   meta: MetaAddress, _permitRequired: boolean,
