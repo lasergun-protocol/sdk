@@ -53,6 +53,12 @@ export interface EnterOptions {
   amount: bigint;
   /** Deploy receiver counterfactually; default true for USDC relay flow. */
   maxNotes?: number;
+  /**
+   * USDC funding mode (assetId=1 only). 'relay' (default): deploy only —
+   * an off-chain relay submits the EIP-3009 pull. 'client': sign here and
+   * execute pull in the same session — completes the entry without a relay.
+   */
+  usdcMode?: 'relay' | 'client';
 }
 
 export interface EnterResult {
@@ -271,6 +277,25 @@ export class LaserGunV2 {
       const st = await receiver.settle({ nonce: n3 });
       await st.wait();
       settleHash = tx.hash;
+    } else if (opts.usdcMode === 'client') {
+      // USDC client-режим: подписываем EIP-3009 и сами исполняем pull —
+      // вход завершается без релея (receiver mint-ит ноты внутри pull)
+      const auth = await this.signEip3009(plan.predicted, plan.depositAmount);
+      const from = await this.cfg.signer.getAddress();
+      const receiver = new Contract(
+        plan.predicted,
+        ['function pull(address,uint256,uint256,uint256,bytes32,uint8,bytes32,bytes32) external'],
+        this.cfg.signer,
+      );
+      const n3 = await this.cfg.signer.getNonce();
+      const pt = await receiver.pull(
+        from, plan.depositAmount,
+        auth.validAfter, auth.validBefore, auth.nonce,
+        auth.v, auth.r, auth.s,
+        { nonce: n3 },
+      );
+      await pt.wait();
+      settleHash = pt.hash;
     }
     return {
       receiver: plan.predicted,

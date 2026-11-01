@@ -324,7 +324,12 @@ export function lsagVerify(
 
 export function schnorrSign(secret: bigint, id: Uint8Array): { R: Uint8Array; s: bigint; sig: Uint8Array } {
   const Xs = mulG(secret);
-  const k = keccakN(encode(Xs), id, toWord(0x726e)); // fresh k from key+id
+  // Fresh RNG nonce per PRD 9.x: R reuse under the same key reveals y_s.
+  // The nonce is additionally bound to (secret, Xs, id) so a broken RNG
+  // cannot leak the key the way a purely public derivation would.
+  const rnd = new Uint8Array(32);
+  crypto.getRandomValues(rnd);
+  const k = (hashBn(rnd, encode(Xs), id, toWord(0x726e)) % (N - 1n)) + 1n;
   const R = mulG(k);
   const c = keccakN(
     new Uint8Array([0x4c, 0x47, 0x32, 0x2d, 0x70]), // "LG2-p"

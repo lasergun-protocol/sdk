@@ -26,7 +26,6 @@ export function indexOf(assetId: number, value: bigint): number {
   if (value === 0n) throw new Error('UnknownDenom');
   let trailing = 0;
   let m = value;
-  const unit = assetId === 1 ? 1n : ETH_MIN_DENOM;
   if (assetId === 2) {
     if (value % ETH_MIN_DENOM !== 0n) throw new Error('UnknownDenom');
     m = value / ETH_MIN_DENOM;
@@ -39,7 +38,6 @@ export function indexOf(assetId: number, value: bigint): number {
   if (di < 0) throw new Error('UnknownDenom');
   const idx = di + trailing * 3;
   if (idx >= GRID[assetId].count) throw new Error('UnknownDenom');
-  void unit;
   return idx;
 }
 
